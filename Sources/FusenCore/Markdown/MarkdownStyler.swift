@@ -18,14 +18,31 @@ extension NSAttributedString.Key {
     static let mdLine = NSAttributedString.Key("MDLine")
     /// Value: Int — nesting depth of a bullet marker ("-", "*", "+"); drawn as •, ◦, ▪ when concealed.
     static let mdBullet = NSAttributedString.Key("MDBullet")
+    /// Value: String — the number of a numbered item ("1."), drawn centred in its box when concealed.
+    static let mdOrdinal = NSAttributedString.Key("MDOrdinal")
     /// Value: true — the text of an inline code span, drawn on a rounded background.
     static let mdInlineCode = NSAttributedString.Key("MDInlineCode")
     /// Value: CGFloat — set on the first character of a marker run that, when concealed, is replaced by
     /// a box of this width (checkbox, quote bar), so the text after it does not move.
     static let mdConcealBox = NSAttributedString.Key("MDConcealBox")
+    /// Value: true — a line's block marker with the indentation before it ("## ", "- ", "1. ", "- [ ] ",
+    /// "> "), or a whole divider line. When Markdown is concealed the caret never stops inside it, and
+    /// Backspace right after it turns the block into plain text (as in Notion).
+    static let mdBlockPrefix = NSAttributedString.Key("MDBlockPrefix")
+    /// Value: NSValue (NSRange) — on the delimiters of an inline span (bold, italic, strike, code, link),
+    /// the range of the whole span with its delimiters. Editing uses it to keep a span's delimiters
+    /// together (deleting, splitting at Return, the formatting commands).
+    static let mdSpan = NSAttributedString.Key("MDSpan")
+    /// Value: String (`MarkdownSpan` raw value) — the kind of that span.
+    static let mdSpanKind = NSAttributedString.Key("MDSpanKind")
     /// Value: true — a character made literal by a backslash escape ("\\*" shows "*"). The backslash
     /// itself is `.mdMarker`. Exported verbatim, never matched as syntax.
     static let mdEscaped = NSAttributedString.Key("MDEscaped")
+}
+
+/// Inline span kinds (see `.mdSpanKind`).
+enum MarkdownSpan: String, Sendable {
+    case bold, italic, boldItalic, strike, code, link
 }
 
 /// Line kinds, matching the block types of Notion-flavored Markdown.
@@ -52,7 +69,9 @@ func makeRegex(_ pattern: String) -> NSRegularExpression {
     try! NSRegularExpression(pattern: pattern)
 }
 
-/// Colors and sizes modelled on Notion's default (light) page style, scaled to a sticky note.
+/// Colors and sizes of Notion's default (light) page style — Notion publishes no style guide, so the
+/// values follow Notion's own layout and the widely used reproduction of its CSS in react-notion-x —
+/// scaled to a sticky note (1em = `fontSize`).
 struct MarkdownTheme {
     var fontSize: CGFloat = 14
     /// Notion's text color, rgb(55, 53, 47).
@@ -62,14 +81,25 @@ struct MarkdownTheme {
     /// Checked to-dos and other de-emphasized text.
     var mutedColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.45)
     var linkUnderlineColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.4)
+    /// Notion's links: the text color at 70 % opacity, underlined.
+    var linkColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.7)
     /// Notion's inline code: red text on a warm gray background.
     var inlineCodeColor = NSColor(srgbRed: 235 / 255, green: 87 / 255, blue: 87 / 255, alpha: 1)
     var codeBackground = NSColor(srgbRed: 135 / 255, green: 131 / 255, blue: 120 / 255, alpha: 0.15)
     var dividerColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.16)
     /// Notion's checked checkbox fill.
     var checkboxFill = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
-    /// Notion: h1 30px, h2 24px, h3 20px on a 16px body (h4 is newer and slightly larger than body).
-    var headingScale: [CGFloat] = [1.875, 1.5, 1.25, 1.125]
+    /// Notion: h1 1.875em, h2 1.5em, h3 1.25em, h4 1.15em, weight 600, line height 1.3.
+    var headingScale: [CGFloat] = [1.875, 1.5, 1.25, 1.15]
+    /// Notion's quote: 1.2em text after a 3px bar and 0.9em of space.
+    var quoteScale: CGFloat = 1.2
+
+    /// Where the text of a bullet, numbered or to-do item starts: Notion puts the marker in a 1.5em
+    /// column and the text 2px after it (24px and 26px on a 16px body). Nested items move by the same.
+    var listColumn: CGFloat { (fontSize * 1.625).rounded() }
+    /// The column the bullet or checkbox is centred in.
+    var listMarkerColumn: CGFloat { fontSize * 1.5 }
+    var quoteColumn: CGFloat { (3 + fontSize * quoteScale * 0.9).rounded() }
 
     var bodyFont: NSFont { .systemFont(ofSize: fontSize) }
     func codeFont(size: CGFloat? = nil) -> NSFont {
@@ -90,19 +120,24 @@ final class MarkdownStyler {
     let theme: MarkdownTheme
     let baseAttributes: [NSAttributedString.Key: Any]
     private let baseParagraph: NSParagraphStyle
-    /// Code blocks: inset inside their background, like Notion's.
+    /// Code blocks: inset inside their background, like Notion's (1em).
     private let codeParagraph: NSParagraphStyle
-    /// Where list and to-do text starts, as in Notion (bullets, numbers and checkboxes line up).
-    private var listTextIndent: CGFloat { theme.fontSize * 2 }
+    /// Dividers: a thin block, like Notion's.
+    private let ruleParagraph: NSParagraphStyle
 
     // Block level (matched against one line; ^ and $ bind to the search range).
     private let fenceOpen = makeRegex(#"^[ \t]*(`{3,}|~{3,})"#)
     private let fenceClose = makeRegex(#"^[ \t]*(`{3,}|~{3,})[ \t]*$"#)
-    private let thematicBreak = makeRegex(#"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$"#)
-    private let heading = makeRegex(#"^ {0,3}(#{1,6})(?:[ \t]+|$)"#)
-    private let quote = makeRegex(#"^ {0,3}(?:>[ \t]?)+"#)
-    private let task = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?:[ \t]+|$)"#)
-    private let listItem = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])(?:[ \t]+|$)"#)
+    // Only dashes, as in Notion: "***" is the start of bold italic, not a divider.
+    private let thematicBreak = makeRegex(#"^ {0,3}-(?:[ \t]*-){2,}[ \t]*$"#)
+    // A block becomes a heading, quote, list item or to-do once a space follows its marker ("## "),
+    // as in Notion: typing "#" or "-" alone keeps it text.
+    private let heading = makeRegex(#"^ {0,3}(#{1,6})[ \t]+"#)
+    private let quote = makeRegex(#"^ {0,3}(?:>[ \t]+)+"#)
+    /// A bare ">" continues a quote begun on the line above (an empty line inside the quote).
+    private let quoteContinuation = makeRegex(#"^ {0,3}>[ \t]*$"#)
+    private let task = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])[ \t]+"#)
+    private let listItem = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+"#)
 
     // Inline. Emphasis patterns expose groups 1 = opening delimiter, 2 = content, 3 = closing.
     private let codeSpan = makeRegex(#"(`+)(?!`)(.+?)(?<!`)\1(?!`)"#)
@@ -110,6 +145,7 @@ final class MarkdownStyler {
     // ASCII-only so that Japanese text right after a URL ("…/pathを参照") is not swallowed.
     static let bareURLPattern = #"https?://[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#@$&*+=%]"#
     private let bareURL = makeRegex(MarkdownStyler.bareURLPattern)
+    private let boldItalic = makeRegex(#"(\*\*\*|___)(?=\S)(.+?)(?<=\S)(\1)"#)
     private let bold = makeRegex(#"(\*\*|__)(?=\S)(.+?)(?<=\S)(\1)"#)
     private let italicStar = makeRegex(#"(?<![*])(\*)(?![\s*])(.+?)(?<![\s*])(\*)(?!\*)"#)
     private let italicUnderscore = makeRegex(#"(?<![_\w])(_)(?![\s_])(.+?)(?<![\s_])(_)(?![_\w])"#)
@@ -128,14 +164,22 @@ final class MarkdownStyler {
         paragraph.minimumLineHeight = (theme.fontSize * 1.5).rounded()
         paragraph.maximumLineHeight = paragraph.minimumLineHeight
         paragraph.paragraphSpacing = 2
+        paragraph.tabStops = []
+        paragraph.defaultTabInterval = theme.listColumn // a tab nests by one list level
         baseParagraph = paragraph
         let code = paragraph.mutableCopy() as! NSMutableParagraphStyle
-        code.firstLineHeadIndent = 10
-        code.headIndent = 10
-        code.tailIndent = -10
+        code.firstLineHeadIndent = theme.fontSize
+        code.headIndent = theme.fontSize
+        code.tailIndent = -theme.fontSize
         code.minimumLineHeight = (theme.fontSize * 1.3).rounded()
         code.maximumLineHeight = code.minimumLineHeight
         codeParagraph = code
+        let rule = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        rule.minimumLineHeight = theme.fontSize.rounded()
+        rule.maximumLineHeight = rule.minimumLineHeight
+        rule.paragraphSpacing = 4
+        rule.paragraphSpacingBefore = 2
+        ruleParagraph = rule
         baseAttributes = [.font: theme.bodyFont, .foregroundColor: theme.textColor, .paragraphStyle: paragraph,
                           .mdLine: MarkdownLine.text.rawValue]
     }
@@ -149,6 +193,7 @@ final class MarkdownStyler {
         storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: ns.length))
 
         var fence: Fence?
+        var previous = MarkdownLine.text
         var location = 0
         while location < ns.length {
             var start = 0, end = 0, contentsEnd = 0
@@ -156,7 +201,8 @@ final class MarkdownStyler {
                             for: NSRange(location: location, length: 0))
             styleLine(NSRange(location: start, length: contentsEnd - start),
                       paragraph: NSRange(location: start, length: end - start),
-                      storage: storage, text: text, fence: &fence)
+                      storage: storage, text: text, fence: &fence, previous: previous)
+            previous = (storage.attribute(.mdLine, at: start, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
             location = end
         }
         fixBrackets(in: NSRange(location: 0, length: ns.length), storage, ns)
@@ -180,7 +226,7 @@ final class MarkdownStyler {
     // MARK: Block level
 
     private func styleLine(_ line: NSRange, paragraph: NSRange, storage s: NSTextStorage,
-                           text: String, fence: inout Fence?) {
+                           text: String, fence: inout Fence?, previous: MarkdownLine) {
         let ns = text as NSString
         func kind(_ k: MarkdownLine) { s.addAttribute(.mdLine, value: k.rawValue, range: paragraph) }
 
@@ -209,6 +255,8 @@ final class MarkdownStyler {
         if thematicBreak.firstMatch(in: text, range: line) != nil {
             kind(.rule)
             dim(line, s)
+            s.addAttributes([.mdBlockPrefix: true], range: line)
+            s.addAttribute(.paragraphStyle, value: ruleParagraph, range: paragraph)
             return
         }
         if let m = heading.firstMatch(in: text, range: line) {
@@ -216,7 +264,7 @@ final class MarkdownStyler {
             kind(.heading(level))
             let size = theme.fontSize * theme.headingScale[level - 1]
             let style = baseParagraph.mutableCopy() as! NSMutableParagraphStyle
-            style.paragraphSpacingBefore = level <= 2 ? 8 : 4
+            style.paragraphSpacingBefore = (size * 0.5).rounded() // Notion's is ~1em; halved for a sticky
             style.minimumLineHeight = (size * 1.3).rounded()
             style.maximumLineHeight = style.minimumLineHeight
             s.addAttribute(.paragraphStyle, value: style, range: paragraph)
@@ -224,6 +272,8 @@ final class MarkdownStyler {
             // so text typed (or composed with the IME) on the next line starts at body size.
             s.addAttribute(.font, value: NSFont.systemFont(ofSize: size, weight: .semibold), range: line)
             dim(m.range, s)
+            s.addAttribute(.mdBlockPrefix, value: true, range: NSRange(location: line.location,
+                                                                        length: NSMaxRange(m.range) - line.location))
             styleInline(after: m.range, in: line, s, text)
             return
         }
@@ -231,14 +281,19 @@ final class MarkdownStyler {
         var content = line
         var prefixEnd = line.location
         var lineKind = MarkdownLine.text
+        var hangingIndent: CGFloat = 0
 
-        if let m = quote.firstMatch(in: text, range: content) {
+        if let m = quote.firstMatch(in: text, range: content)
+            ?? (previous == .quote ? quoteContinuation.firstMatch(in: text, range: content) : nil) {
             lineKind = .quote
+            // Notion's quote text is 1.2em; its line height grows with it.
+            let size = theme.fontSize * theme.quoteScale
+            s.addAttribute(.font, value: NSFont.systemFont(ofSize: size), range: line)
             dim(m.range, s)
-            pad(m.range, to: theme.fontSize * 1.2, s, ns)
-            // Concealed, the "> " becomes a box of the same width that holds Notion's quote bar.
-            s.addAttribute(.mdConcealBox, value: width(of: m.range, s, ns),
-                           range: NSRange(location: m.range.location, length: 1))
+            pad(m.range, to: theme.quoteColumn, s, ns)
+            // Concealed, the "> " becomes a box that holds Notion's quote bar; the text follows it.
+            s.addAttribute(.mdConcealBox, value: theme.quoteColumn, range: NSRange(location: m.range.location, length: 1))
+            hangingIndent = theme.quoteColumn
             prefixEnd = NSMaxRange(m.range)
             content = NSRange(location: prefixEnd, length: NSMaxRange(line) - prefixEnd)
         }
@@ -248,16 +303,17 @@ final class MarkdownStyler {
             let box = m.range(at: 3)
             let checkLocation = box.location + 1
             let isChecked = ns.character(at: checkLocation) != 0x20 // " "
-            // "- [ ]": concealed, the whole prefix becomes one checkbox box of the same width.
-            let prefix = NSRange(location: m.range(at: 2).location, length: NSMaxRange(box) - m.range(at: 2).location)
+            // "- [ ] ": concealed, the whole prefix is one list-column-wide box holding the checkbox.
+            let marker = m.range(at: 2)
+            let prefix = NSRange(location: marker.location, length: NSMaxRange(m.range) - marker.location)
             fixBrackets(in: box, s, ns) // before measuring the prefix
             dim(prefix, s)
-            pad(prefix, through: NSRange(location: prefix.location, length: NSMaxRange(m.range) - prefix.location),
-                to: listTextIndent, s, ns)
-            s.addAttributes([.mdTaskToggle: checkLocation,
-                             .mdConcealBox: width(of: prefix, s, ns)],
+            pad(NSRange(location: marker.location, length: NSMaxRange(box) - marker.location), through: prefix,
+                to: theme.listColumn, s, ns)
+            s.addAttributes([.mdTaskToggle: checkLocation, .mdConcealBox: theme.listColumn],
                             range: NSRange(location: prefix.location, length: 1))
             s.addAttribute(.mdTaskToggle, value: checkLocation, range: prefix)
+            hangingIndent += CGFloat(depth(of: m.range(at: 1), ns) + 1) * theme.listColumn
             prefixEnd = NSMaxRange(m.range)
             content = NSRange(location: prefixEnd, length: NSMaxRange(line) - prefixEnd)
             if isChecked {
@@ -267,23 +323,36 @@ final class MarkdownStyler {
             }
         } else if let m = listItem.firstMatch(in: text, range: content) {
             let marker = m.range(at: 2)
+            let prefix = NSRange(location: marker.location, length: NSMaxRange(m.range) - marker.location)
+            var box = theme.listColumn
+            s.addAttribute(.mdMarker, value: true, range: prefix)
             if ns.character(at: marker.location) >= 0x30, ns.character(at: marker.location) <= 0x39 {
-                if lineKind == .text { lineKind = .ordered } // "1." stays visible, as in Notion
+                if lineKind == .text { lineKind = .ordered }
+                // Concealed, "1. " is a box with the number centred in it, as in Notion (wider for "100.").
+                box = max(box, width(of: marker, s, ns) + theme.fontSize * 0.5)
+                s.addAttributes([.mdOrdinal: ns.substring(with: marker), .mdConcealBox: box],
+                                range: NSRange(location: marker.location, length: 1))
             } else {
                 if lineKind == .text { lineKind = .bullet }
-                // Syntax, but in the text color: concealed, the same glyph slot shows a Notion bullet.
-                s.addAttributes([.mdMarker: true, .mdBullet: depth(of: m.range(at: 1), ns)], range: marker)
+                // Concealed, "- " is one list-column-wide box with Notion's bullet centred in it.
+                s.addAttributes([.mdBullet: depth(of: m.range(at: 1), ns), .mdConcealBox: box], range: marker)
             }
-            pad(marker, through: NSRange(location: marker.location, length: NSMaxRange(m.range) - marker.location),
-                to: listTextIndent, s, ns)
+            pad(marker, through: prefix, to: box, s, ns)
+            hangingIndent += CGFloat(depth(of: m.range(at: 1), ns)) * theme.listColumn + box
             prefixEnd = NSMaxRange(m.range)
             content = NSRange(location: prefixEnd, length: NSMaxRange(line) - prefixEnd)
         }
 
         kind(lineKind)
         if prefixEnd > line.location {
-            applyHangingIndent(prefix: NSRange(location: line.location, length: prefixEnd - line.location),
-                               paragraph: paragraph, s, ns)
+            s.addAttribute(.mdBlockPrefix, value: true, range: NSRange(location: line.location, length: prefixEnd - line.location))
+            let style = baseParagraph.mutableCopy() as! NSMutableParagraphStyle
+            style.headIndent = hangingIndent // wrapped lines align with the text after the marker
+            if lineKind == .quote {
+                style.minimumLineHeight = (theme.fontSize * theme.quoteScale * 1.5).rounded()
+                style.maximumLineHeight = style.minimumLineHeight
+            }
+            s.addAttribute(.paragraphStyle, value: style, range: paragraph)
         }
         styleInline(content, s, text)
     }
@@ -316,15 +385,6 @@ final class MarkdownStyler {
 
     private func width(of range: NSRange, _ s: NSTextStorage, _ ns: NSString) -> CGFloat {
         ceil(s.attributedSubstring(from: range).size().width)
-    }
-
-    /// Wrapped lines of a list item / quote align with the text after the marker.
-    /// The concealed prefix has the same width as the visible one (see mdConcealBox), so this holds
-    /// for both.
-    private func applyHangingIndent(prefix: NSRange, paragraph: NSRange, _ s: NSTextStorage, _ ns: NSString) {
-        let style = baseParagraph.mutableCopy() as! NSMutableParagraphStyle
-        style.headIndent = width(of: prefix, s, ns)
-        s.addAttribute(.paragraphStyle, value: style, range: paragraph)
     }
 
     // MARK: Inline
@@ -363,8 +423,7 @@ final class MarkdownStyler {
             let size = (s.attribute(.font, at: m.range.location, effectiveRange: nil) as? NSFont)?.pointSize
             s.addAttributes([.font: theme.codeFont(size: size), .foregroundColor: theme.inlineCodeColor,
                              .mdInlineCode: true, .mdCode: true], range: m.range(at: 2))
-            dim(open, s)
-            dim(close, s)
+            delimit(open, close, span: m.range, .code, s)
             claimed.append(m.range)
         }
         var escapes = IndexSet() // backslash + escaped character: kept apart from `claimed`, which is scanned linearly
@@ -384,9 +443,9 @@ final class MarkdownStyler {
             && free(NSRange(location: NSMaxRange(m.range(at: 1)), length: NSMaxRange(m.range) - NSMaxRange(m.range(at: 1)))) {
             let label = m.range(at: 1)
             let target = (text as NSString).substring(with: m.range(at: 2))
-            dim(NSRange(location: m.range.location, length: 1), s)
-            dim(NSRange(location: NSMaxRange(label), length: NSMaxRange(m.range) - NSMaxRange(label)), s)
-            s.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
+            delimit(NSRange(location: m.range.location, length: 1),
+                    NSRange(location: NSMaxRange(label), length: NSMaxRange(m.range) - NSMaxRange(label)), span: m.range, .link, s)
+            s.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: theme.linkColor,
                              .underlineColor: theme.linkUnderlineColor], range: label)
             if let url = URL(string: target) {
                 s.addAttribute(.mdLink, value: url, range: label)
@@ -397,7 +456,7 @@ final class MarkdownStyler {
         }
 
         for m in bareURL.matches(in: text, range: range) where free(m.range) {
-            s.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
+            s.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: theme.linkColor,
                              .underlineColor: theme.linkUnderlineColor, .mdBareURL: true], range: m.range)
             if let url = URL(string: (text as NSString).substring(with: m.range)) {
                 s.addAttribute(.mdLink, value: url, range: m.range)
@@ -405,17 +464,23 @@ final class MarkdownStyler {
             claimed.append(m.range)
         }
 
-        applyDelimited(bold, in: range, text, s, &claimed, escapes) { addBold($0, s) }
         // Obliqueness instead of an italic font face: CJK fonts have no italic, so this
         // slants Japanese text as well as Latin text.
-        applyDelimited(italicStar, in: range, text, s, &claimed, escapes) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
-        applyDelimited(italicUnderscore, in: range, text, s, &claimed, escapes) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
-        applyDelimited(strike, in: range, text, s, &claimed, escapes) {
+        applyDelimited(boldItalic, .boldItalic, in: range, text, s, &claimed, escapes) {
+            addBold($0, s)
+            s.addAttribute(.obliqueness, value: 0.2, range: $0)
+        }
+        applyDelimited(bold, .bold, in: range, text, s, &claimed, escapes) { addBold($0, s) }
+        applyDelimited(italicStar, .italic, in: range, text, s, &claimed, escapes) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
+        applyDelimited(italicUnderscore, .italic, in: range, text, s, &claimed, escapes) {
+            s.addAttribute(.obliqueness, value: 0.2, range: $0)
+        }
+        applyDelimited(strike, .strike, in: range, text, s, &claimed, escapes) {
             s.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: $0)
         }
     }
 
-    private func applyDelimited(_ regex: NSRegularExpression, in range: NSRange, _ text: String,
+    private func applyDelimited(_ regex: NSRegularExpression, _ kind: MarkdownSpan, in range: NSRange, _ text: String,
                                 _ s: NSTextStorage, _ claimed: inout [NSRange], _ escapes: IndexSet, style: (NSRange) -> Void) {
         for m in regex.matches(in: text, range: range) {
             let open = m.range(at: 1), close = m.range(at: 3)
@@ -423,10 +488,17 @@ final class MarkdownStyler {
                   !escapes.intersects(integersIn: open.location..<NSMaxRange(open)),
                   !escapes.intersects(integersIn: close.location..<NSMaxRange(close)) else { continue }
             style(m.range(at: 2))
-            dim(open, s)
-            dim(close, s)
+            delimit(open, close, span: m.range, kind, s)
             claimed.append(open)
             claimed.append(close)
+        }
+    }
+
+    /// Marks a span's delimiters as syntax and records the span they belong to.
+    private func delimit(_ open: NSRange, _ close: NSRange, span: NSRange, _ kind: MarkdownSpan, _ s: NSTextStorage) {
+        for delimiter in [open, close] {
+            dim(delimiter, s)
+            s.addAttributes([.mdSpan: NSValue(range: span), .mdSpanKind: kind.rawValue], range: delimiter)
         }
     }
 

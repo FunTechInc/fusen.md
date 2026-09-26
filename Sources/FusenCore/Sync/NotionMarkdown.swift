@@ -23,7 +23,7 @@ enum NotionMarkdown {
     // Only used to find where a line's content starts; its kind always comes from the styler.
     // Same patterns as the block regexes in MarkdownStyler.
     private static let headingPrefix = makeRegex(#"^ {0,3}#{1,6}(?:[ \t]+|$)"#)
-    private static let quotePrefix = makeRegex(#"^ {0,3}(?:>[ \t]?)+"#)
+    private static let quotePrefix = makeRegex(#"^ {0,3}(?:>[ \t]+)+|^ {0,3}>[ \t]*$"#)
     private static let taskPrefix = makeRegex(#"^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\](?:[ \t]+|$)"#)
     private static let listPrefix = makeRegex(#"^([ \t]*)(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)"#)
     /// The part of a link after its label, as MarkdownStyler matches it: `](target "title")`.
@@ -432,8 +432,9 @@ enum NotionMarkdown {
             }
             if body.hasPrefix(">") {
                 let content = body.hasPrefix("> ") ? body.dropFirst(2) : body.dropFirst()
-                for part in lineBreaks(String(content)) {
-                    out.append(part.isEmpty ? indentation + ">" : appLine(indentation, "> ", part, styler: styler))
+                // An empty part is ">" (it continues the quote above); only a quote that starts empty needs "> ".
+                for (index, part) in lineBreaks(String(content)).enumerated() {
+                    out.append(part.isEmpty ? indentation + (index == 0 ? "> " : ">") : appLine(indentation, "> ", part, styler: styler))
                 }
                 continue
             }

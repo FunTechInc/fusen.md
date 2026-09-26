@@ -1,22 +1,22 @@
 import AppKit
 
-/// Shows Markdown the way Notion does. Syntax (`.mdMarker`, set by MarkdownStyler) is hidden except on
-/// the lines being edited (`revealedRanges`, the caret's paragraphs), where it is shown dimmed so it can
-/// be edited. Concealed:
-///  * bullets ("-", "*", "+") are drawn as •, ◦, ▪ by nesting depth;
-///  * a task prefix ("- [ ]") and a quote prefix ("> ") become a box of the same width
-///    (`.mdConcealBox`) holding a checkbox or Notion's quote bar, so the text never shifts sideways;
+/// Shows Markdown the way Notion does: syntax (`.mdMarker`, set by MarkdownStyler) is never shown, also
+/// on the line being edited — "## " turns the line into a heading and disappears. (「Markdown記号をすべて
+/// 表示」 turns concealing off to edit the raw text.) Concealed:
+///  * a bullet ("- "), a to-do prefix ("- [ ] ") and a quote prefix ("> ") become a box (`.mdConcealBox`)
+///    holding Notion's bullet (•, ◦, ▪ by depth), checkbox or quote bar, so their text starts at the
+///    same place as a numbered item's;
 ///  * a thematic break ("---") becomes a thin line;
-///  * other syntax (heading #, emphasis delimiters, link brackets and URLs, code backticks) takes no space.
+///  * other syntax (heading #, emphasis delimiters, link brackets and URLs, code backticks, escapes)
+///    takes no space.
 /// Fenced code blocks always get a full-width background. Only glyphs change, never characters, so
-/// editing, undo, IME composition and the exported Markdown are unaffected.
+/// undo, IME composition and the exported Markdown are unaffected; ConcealedEditing keeps the caret
+/// out of hidden syntax.
 ///
 /// TextKit 1 on purpose: hiding characters needs glyph-level control (null and control glyphs), which
 /// TextKit 2 does not offer.
 final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     let theme: MarkdownTheme
-    /// Paragraphs whose Markdown is shown as typed.
-    private(set) var revealedRanges: [NSRange] = []
     /// When false, nothing is concealed (all Markdown shown as typed).
     var concealsMarkdown = true {
         didSet {
@@ -34,31 +34,7 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Call when the selection changes: shows Markdown on the paragraphs containing `selectedRanges`.
-    func revealParagraphs(containing selectedRanges: [NSRange]) {
-        guard let storage = textStorage else { return }
-        let ns = storage.string as NSString
-        setRevealedRanges(selectedRanges.map { range in
-            let location = min(range.location, ns.length)
-            return ns.paragraphRange(for: NSRange(location: location, length: min(range.length, ns.length - location)))
-        })
-    }
-
-    func setRevealedRanges(_ ranges: [NSRange]) {
-        guard ranges != revealedRanges else { return }
-        let old = revealedRanges
-        revealedRanges = ranges
-        // Typing only lengthens the caret's paragraph; re-layout only paragraphs whose state changed,
-        // so the line being typed (or composed with the IME) is not regenerated on every keystroke.
-        let oldStarts = Set(old.map(\.location)), newStarts = Set(ranges.map(\.location))
-        guard oldStarts != newStarts else { return }
-        for range in old where !newStarts.contains(range.location) { invalidate(range) }
-        for range in ranges where !oldStarts.contains(range.location) { invalidate(range) }
-    }
-
-    func isConcealed(at index: Int) -> Bool {
-        concealsMarkdown && !revealedRanges.contains { NSLocationInRange(index, $0) }
-    }
+    func isConcealed(at index: Int) -> Bool { concealsMarkdown }
 
     private func invalidate(_ range: NSRange) {
         guard let length = textStorage?.length else { return }
@@ -79,7 +55,7 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                        forGlyphRange glyphRange: NSRange) -> Int {
         guard concealsMarkdown, let storage = textStorage else { return 0 }
         let count = glyphRange.length
-        var newGlyphs = Array(UnsafeBufferPointer(start: glyphs, count: count))
+        let newGlyphs = Array(UnsafeBufferPointer(start: glyphs, count: count))
         var newProps = Array(UnsafeBufferPointer(start: props, count: count))
         var changed = false
         for i in 0..<count {
@@ -88,8 +64,6 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                   storage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil else { continue }
             if storage.attribute(.mdConcealBox, at: index, effectiveRange: nil) != nil {
                 newProps[i] = .controlCharacter // sized and drawn below
-            } else if let depth = storage.attribute(.mdBullet, at: index, effectiveRange: nil) as? Int {
-                if let bullet = bulletGlyph(depth: depth, font: aFont) { newGlyphs[i] = bullet }
             } else {
                 newProps[i] = .null
             }
@@ -103,15 +77,6 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             }
         }
         return count
-    }
-
-    private func bulletGlyph(depth: Int, font: NSFont) -> CGGlyph? {
-        for character in [[UniChar(0x2022), 0x25E6, 0x25AA][depth % 3], UniChar(0x2022)] {
-            var char = character
-            var glyph = CGGlyph(0)
-            if CTFontGetGlyphsForCharacters(font as CTFont, &char, &glyph, 1), glyph != 0 { return glyph }
-        }
-        return nil
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
@@ -158,9 +123,10 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             case .quote where concealsMarkdown:
                 forEachParagraph(in: run, storage) { paragraph in
                     guard isConcealed(at: paragraph.location), let box = concealBox(in: paragraph, storage) else { return }
-                    let barX = boxRect(forCharacterAt: box, in: container).minX + 1
-                    forEachLineFragment(in: paragraph) { rect, used in
-                        let bar = NSRect(x: barX, y: used.minY + 2, width: 3, height: max(used.height - 4, 1))
+                    let barX = boxRect(forCharacterAt: box, in: container).minX
+                    // Full line height, so consecutive quote lines make one bar, as in Notion.
+                    forEachLineFragment(in: paragraph) { rect, _ in
+                        let bar = NSRect(x: barX, y: rect.minY, width: 3, height: rect.height)
                         theme.textColor.setFill()
                         bar.offsetBy(dx: origin.x, dy: origin.y).fill()
                     }
@@ -211,23 +177,68 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         guard concealsMarkdown, let storage = textStorage, let container = textContainers.first else { return }
         let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         storage.enumerateAttribute(.mdConcealBox, in: characters) { value, run, _ in
-            guard value != nil, isConcealed(at: run.location),
-                  let check = storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) as? Int,
-                  check < storage.length else { return }
-            let isChecked = (storage.string as NSString).character(at: check) != 0x20
-            drawCheckbox(checked: isChecked, in: boxRect(forCharacterAt: run.location, in: container),
-                         baselineGlyph: glyphIndexForCharacter(at: run.location), origin: origin)
+            guard value != nil, isConcealed(at: run.location) else { return }
+            let box = boxRect(forCharacterAt: run.location, in: container)
+            let glyph = glyphIndexForCharacter(at: run.location)
+            if let check = storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) as? Int,
+               check < storage.length {
+                let isChecked = (storage.string as NSString).character(at: check) != 0x20
+                drawCheckbox(checked: isChecked, in: box, glyph: glyph, origin: origin)
+            } else if let depth = storage.attribute(.mdBullet, at: run.location, effectiveRange: nil) as? Int {
+                drawBullet(depth: depth, in: box, glyph: glyph, origin: origin)
+            } else if let ordinal = storage.attribute(.mdOrdinal, at: run.location, effectiveRange: nil) as? String {
+                drawOrdinal(ordinal, in: box, glyph: glyph, origin: origin)
+            }
         }
     }
 
-    private func drawCheckbox(checked: Bool, in box: NSRect, baselineGlyph: Int, origin: NSPoint) {
-        let size = (theme.fontSize * 1.05).rounded()
-        let fragment = lineFragmentRect(forGlyphAt: baselineGlyph, effectiveRange: nil)
-        let baseline = fragment.minY + location(forGlyphAt: baselineGlyph).y
-        let centerY = baseline - theme.bodyFont.capHeight / 2
-        let rect = NSRect(x: box.minX + 1, y: (centerY - size / 2).rounded(), width: size, height: size)
+    /// The vertical centre of the first line's text (between the x-height and the cap height).
+    private func textCenterY(glyph: Int) -> CGFloat {
+        let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let baseline = fragment.minY + location(forGlyphAt: glyph).y
+        let font = theme.bodyFont
+        return baseline - (font.capHeight + font.xHeight) / 4
+    }
+
+    /// Notion's bullets: a disc, then a circle, then a square, centred in the marker column.
+    private func drawBullet(depth: Int, in box: NSRect, glyph: Int, origin: NSPoint) {
+        let size = (theme.fontSize * 0.36).rounded(.toNearestOrAwayFromZero)
+        let center = NSPoint(x: box.minX + theme.listMarkerColumn / 2, y: textCenterY(glyph: glyph))
+        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
             .offsetBy(dx: origin.x, dy: origin.y)
-        let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 3, yRadius: 3)
+        theme.textColor.set()
+        switch depth % 3 {
+        case 0:
+            NSBezierPath(ovalIn: rect).fill()
+        case 1:
+            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+            circle.lineWidth = 1
+            circle.stroke()
+        default:
+            NSBezierPath(rect: rect.insetBy(dx: 0.25, dy: 0.25)).fill()
+        }
+    }
+
+    /// Notion's numbers: centred in the marker column (or at its start when wider), on the text's baseline.
+    private func drawOrdinal(_ ordinal: String, in box: NSRect, glyph: Int, origin: NSPoint) {
+        let font = theme.bodyFont
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: theme.textColor]
+        let width = (ordinal as NSString).size(withAttributes: attributes).width
+        let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let baseline = fragment.minY + location(forGlyphAt: glyph).y
+        let x = box.minX + max((theme.listMarkerColumn - width) / 2, 0)
+        (ordinal as NSString).draw(at: NSPoint(x: x + origin.x, y: baseline - font.ascender + origin.y), withAttributes: attributes)
+    }
+
+    /// Notion's checkbox: 1em square with a 1.3px border, centred in the marker column; checked, a
+    /// blue fill with a white check.
+    private func drawCheckbox(checked: Bool, in box: NSRect, glyph: Int, origin: NSPoint) {
+        let size = theme.fontSize.rounded()
+        let centerY = textCenterY(glyph: glyph)
+        let rect = NSRect(x: (box.minX + (theme.listMarkerColumn - size) / 2).rounded(), y: (centerY - size / 2).rounded(),
+                          width: size, height: size)
+            .offsetBy(dx: origin.x, dy: origin.y)
+        let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.65, dy: 0.65), xRadius: 2.5, yRadius: 2.5)
         if checked {
             theme.checkboxFill.setFill()
             path.fill()
@@ -241,7 +252,7 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             NSColor.white.setStroke()
             check.stroke()
         } else {
-            path.lineWidth = 1.5
+            path.lineWidth = 1.3
             theme.textColor.setStroke()
             path.stroke()
         }

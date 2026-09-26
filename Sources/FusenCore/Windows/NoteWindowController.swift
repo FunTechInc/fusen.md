@@ -38,6 +38,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         container.widthTracksTextView = true
         layoutManager.addTextContainer(container)
         textView = MarkdownTextView(frame: .zero, textContainer: container)
+        textView.concealsMarkdown = concealsMarkdown
         super.init(window: panel)
 
         configure(panel)
@@ -51,12 +52,12 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         panel.title = NoteTitle.derive(from: body)
         panel.delegate = self
         textView.delegate = self
-        updateRevealedLines()
     }
 
-    /// Shows all Markdown as typed (false) or only on the lines being edited (true).
+    /// Shows all Markdown as typed (false), or none of it, also while editing (true, as in Notion).
     func setConcealsMarkdown(_ conceals: Bool) {
         layoutManager.concealsMarkdown = conceals
+        textView.concealsMarkdown = conceals
     }
 
     @available(*, unavailable)
@@ -74,8 +75,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     private func configureTextView(in panel: NSPanel) {
         let scrollView = NSScrollView(frame: panel.contentLayoutRect)
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
+        Self.configureScroller(of: scrollView)
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.autoresizingMask = [.width, .height]
@@ -104,6 +104,14 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
         scrollView.documentView = textView
         panel.contentView = scrollView
+    }
+
+    /// Stickies' scroll bar: the small size (its note nib sets the vertical scroller to .small), which
+    /// is also thinner when 「スクロールバーを表示: 常に」 shows the classic one with a track.
+    static func configureScroller(of scrollView: NSScrollView) {
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScroller?.controlSize = .small
     }
 
     private func applyWindowState() {
@@ -170,21 +178,35 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         history.checkpoint(meta.id, text: textView.string, reason: .writingtools)
     }
 
-    func textViewDidChangeSelection(_ notification: Notification) {
-        updateRevealedLines()
+    /// Keeps the caret out of concealed syntax (see ConcealedEditing). Not while the IME composes.
+    func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRanges oldSelectedCharRanges: [NSValue],
+                  toCharacterRanges newSelectedCharRanges: [NSValue]) -> [NSValue] {
+        guard layoutManager.concealsMarkdown, !textView.hasMarkedText(), let storage = textView.textStorage else {
+            return newSelectedCharRanges
+        }
+        return Self.adjusted(newSelectedCharRanges, from: oldSelectedCharRanges, in: storage)
     }
 
-    /// Markdown is shown as typed on the paragraphs holding the selection (or the caret) and concealed
-    /// elsewhere. While the IME is composing the caret stays in its paragraph, so nothing on that line
-    /// is re-laid out mid-conversion.
-    /// Like Notion, a note that is not being edited (window not key) shows no Markdown at all.
-    private func updateRevealedLines() {
-        guard window?.isKeyWindow == true else { return layoutManager.setRevealedRanges([]) }
-        layoutManager.revealParagraphs(containing: textView.selectedRanges.map(\.rangeValue))
+    static func adjusted(_ new: [NSValue], from old: [NSValue], in storage: NSTextStorage) -> [NSValue] {
+        let oldCaret = old.first?.rangeValue.location ?? 0
+        return new.map { value in
+            let range = value.rangeValue
+            guard range.length == 0 else { return NSValue(range: ConcealedEditing.adjustSelection(range, in: storage)) }
+            return NSValue(range: NSRange(location: ConcealedEditing.adjustCaret(range.location, from: oldCaret, in: storage),
+                                          length: 0))
+        }
     }
 
-    func windowDidBecomeKey(_ notification: Notification) { updateRevealedLines() }
-    func windowDidResignKey(_ notification: Notification) { updateRevealedLines() }
+    /// Restyles after an edit and keeps the caret out of syntax the edit made: "-" typed before " 項目"
+    /// turns the line into a list item whose hidden marker would hold the caret.
+    static func restyle(_ textView: MarkdownTextView, with styler: MarkdownStyler) {
+        guard let storage = textView.textStorage else { return }
+        styler.restyle(storage)
+        guard textView.concealsMarkdown else { return }
+        let ranges = textView.selectedRanges
+        let adjusted = adjusted(ranges, from: ranges, in: storage)
+        if adjusted != ranges { textView.selectedRanges = adjusted }
+    }
 
     /// New text starts from the plain body style (keeping the font, so composing inside a heading shows
     /// heading-sized text) and never inherits Markdown markers or links from the character before it.
@@ -203,7 +225,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         // heading), which reflows the line and moves the candidate window, and the uncommitted
         // reading is not worth saving. Committing sends another textDidChange, which styles and saves.
         guard !textView.hasMarkedText() else { return }
-        restyle()
+        Self.restyle(textView, with: styler)
         store.updateBody(textView.string, for: meta.id)
         window?.title = NoteTitle.derive(from: textView.string)
     }

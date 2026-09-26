@@ -81,7 +81,8 @@ struct NotionMarkdownTests {
     }
 
     @Test func dividers() {
-        #expect(export("上\n---\n***\n_ _ _\n下") == "上\n---\n---\n---\n下")
+        // Only dashes make a divider, as in Notion; "***" and "_ _ _" stay text (escaped for Notion).
+        #expect(export("上\n---\n- - -\n***\n_ _ _\n下") == "上\n---\n---\n\\*\\*\\*\n\\_ _ _\n下")
     }
 
     @Test func plainTextIsEscapedButSyntaxAndCodeAreNot() {
@@ -196,7 +197,7 @@ struct NotionMarkdownTests {
             #expect(NotionMarkdown.fromNotion(export(note)) == note)
         }
 
-        let original = "* 項目\n  + 子\n1) 一\n##### 小見出し\n  > 引用\n- [X] 完了\n***\n\n\n"
+        let original = "* 項目\n  + 子\n1) 一\n##### 小見出し\n  > 引用\n- [X] 完了\n- - -\n\n\n"
         let normalized = "- 項目\n\t- 子\n1. 一\n#### 小見出し\n> 引用\n- [x] 完了\n---"
         #expect(NotionMarkdown.fromNotion(export(original)) == normalized)
         #expect(export(normalized) == export(original))

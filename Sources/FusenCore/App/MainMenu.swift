@@ -45,6 +45,17 @@ enum MainMenu {
                  tag: Int(NSFindPanelAction.showFindPanel.rawValue)),
         ]))
 
+        // Notion's shortcuts. The actions are MarkdownTextView's (the first responder).
+        main.addItem(submenu("書式", [
+            item("太字", #selector(MarkdownTextView.toggleBold(_:)), "b"),
+            item("斜体", #selector(MarkdownTextView.toggleItalic(_:)), "i"),
+            item("取り消し線", #selector(MarkdownTextView.toggleStrikethrough(_:)), "s", [.command, .shift]),
+            item("コード", #selector(MarkdownTextView.toggleInlineCode(_:)), "e"),
+            item("リンク…", #selector(MarkdownTextView.insertLink(_:)), "k"),
+            .separator(),
+            item("区切り線を挿入", #selector(MarkdownTextView.insertDivider(_:))),
+        ]))
+
         let colorItems = NoteColor.allCases.enumerated().map { index, color in
             item(color.title, #selector(NoteWindowController.setNoteColor(_:)), "\(index + 1)", tag: index)
         }

@@ -279,7 +279,7 @@ private struct MarkdownPreview: NSViewRepresentable {
 
         let scrollView = NSScrollView()
         scrollView.appearance = NSAppearance(named: .aqua)
-        scrollView.hasVerticalScroller = true
+        NoteWindowController.configureScroller(of: scrollView)
         scrollView.drawsBackground = true
         scrollView.documentView = textView
         return scrollView

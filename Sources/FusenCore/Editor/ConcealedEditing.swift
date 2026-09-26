@@ -1,0 +1,451 @@
+import AppKit
+
+/// Editing rules for concealed Markdown, as in Notion: syntax takes no space on screen, so the caret
+/// never stops inside it, and the editing keys act on what is visible while keeping each inline span's
+/// delimiters together. Everything here reads the attributes MarkdownStyler records (`.mdBlockPrefix`,
+/// `.mdMarker`, `.mdConcealBox`, `.mdSpan`, `.mdEscaped`, `.mdLine`).
+@MainActor
+enum ConcealedEditing {
+    struct Line {
+        /// The paragraph, with its newline.
+        let range: NSRange
+        let contentsEnd: Int
+        let kind: MarkdownLine
+        /// Block marker with its indentation ("## ", "\t- ", "> "), or the whole of a divider line.
+        let prefix: NSRange?
+
+        /// Where the text of the block starts.
+        var contentStart: Int { prefix.map(NSMaxRange) ?? range.location }
+        var content: NSRange { NSRange(location: contentStart, length: contentsEnd - contentStart) }
+        var hasNewline: Bool { NSMaxRange(range) > contentsEnd }
+        var isListItem: Bool { kind == .bullet || kind == .ordered || kind == .task }
+        /// Not a divider or code: the line holds Markdown text.
+        var holdsInlineText: Bool { kind != .rule && kind != .code && kind != .fence }
+    }
+
+    /// An inline span (bold, italic, strike, code, link) with its delimiters.
+    struct Span: Equatable {
+        let range: NSRange
+        let kind: MarkdownSpan
+        let opening: NSRange
+        let closing: NSRange
+        /// Between the delimiters.
+        var content: NSRange { NSRange(location: NSMaxRange(opening), length: closing.location - NSMaxRange(opening)) }
+    }
+
+    /// A change to the text, and where the caret goes after it.
+    struct Edit: Equatable {
+        let range: NSRange
+        let string: String
+        let caret: Int
+    }
+
+    static func line(at location: Int, in s: NSTextStorage) -> Line {
+        let ns = s.string as NSString
+        let clamped = min(max(location, 0), ns.length)
+        var start = 0, end = 0, contentsEnd = 0
+        ns.getLineStart(&start, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: clamped, length: 0))
+        let range = NSRange(location: start, length: end - start)
+        guard start < ns.length else { return Line(range: range, contentsEnd: contentsEnd, kind: .text, prefix: nil) }
+        let kind = (s.attribute(.mdLine, at: start, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
+        var prefix: NSRange?
+        if contentsEnd > start {
+            var run = NSRange()
+            if s.attribute(.mdBlockPrefix, at: start, longestEffectiveRange: &run,
+                           in: NSRange(location: start, length: contentsEnd - start)) != nil {
+                prefix = run
+            }
+        }
+        return Line(range: range, contentsEnd: contentsEnd, kind: kind, prefix: prefix)
+    }
+
+    /// Syntax that takes no space: markers outside block prefixes, except boxes (bullets, checkboxes,
+    /// quote bars, numbers), which are drawn.
+    static func isHidden(_ i: Int, in s: NSTextStorage) -> Bool {
+        guard i >= 0, i < s.length else { return false }
+        let attributes = s.attributes(at: i, effectiveRange: nil)
+        return attributes[.mdMarker] != nil && attributes[.mdBlockPrefix] == nil && attributes[.mdConcealBox] == nil
+    }
+
+    /// The hidden backslash of an escape ("\*" shows "*").
+    static func isEscapeBackslash(_ i: Int, in s: NSTextStorage) -> Bool {
+        isHidden(i, in: s) && i + 1 < s.length && s.attribute(.mdEscaped, at: i + 1, effectiveRange: nil) != nil
+    }
+
+    /// Nothing the user can see lies between `a` and `b`: only hidden syntax and block markers (a
+    /// divider counts as visible).
+    static func onlySyntax(between a: Int, and b: Int, in s: NSTextStorage) -> Bool {
+        (min(a, b)..<max(a, b)).allSatisfy { i in
+            isHidden(i, in: s) || (s.attribute(.mdBlockPrefix, at: i, effectiveRange: nil) != nil
+                                   && s.attribute(.mdLine, at: i, effectiveRange: nil) as? String != MarkdownLine.rule.rawValue)
+        }
+    }
+
+    /// The delimiter ("**", a link's "](url)") that `p` is inside of, if it is: between two hidden
+    /// characters of the same span and side. Between the delimiters of two spans ("**" then "`") is a
+    /// place of its own (after the bold, before the code).
+    static func delimiter(around p: Int, in s: NSTextStorage) -> NSRange? {
+        func span(_ i: Int) -> NSValue? { isHidden(i, in: s) ? s.attribute(.mdSpan, at: i, effectiveRange: nil) as? NSValue : nil }
+        guard let value = span(p), span(p - 1) == value else { return nil }
+        var start = p - 1, end = p + 1
+        while span(start - 1) == value { start -= 1 }
+        while span(end) == value { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Where a block's text starts on screen: after its marker and any hidden syntax (an opening "**").
+    static func visibleContentStart(of line: Line, in s: NSTextStorage) -> Int {
+        var p = line.contentStart
+        while p < line.contentsEnd, isHidden(p, in: s) { p += 1 }
+        return p
+    }
+
+    // MARK: Spans
+
+    /// The span whose delimiter is at `i`.
+    static func span(at i: Int, in s: NSTextStorage) -> Span? {
+        guard i >= 0, i < s.length, let value = s.attribute(.mdSpan, at: i, effectiveRange: nil) as? NSValue,
+              let kind = (s.attribute(.mdSpanKind, at: i, effectiveRange: nil) as? String).flatMap(MarkdownSpan.init)
+        else { return nil }
+        let range = value.rangeValue
+        guard NSMaxRange(range) <= s.length else { return nil }
+        func isOwn(_ j: Int) -> Bool { (s.attribute(.mdSpan, at: j, effectiveRange: nil) as? NSValue)?.rangeValue == range }
+        var openingEnd = range.location
+        while openingEnd < NSMaxRange(range), isOwn(openingEnd) { openingEnd += 1 }
+        var closingStart = NSMaxRange(range)
+        while closingStart > openingEnd, isOwn(closingStart - 1) { closingStart -= 1 }
+        return Span(range: range, kind: kind,
+                    opening: NSRange(location: range.location, length: openingEnd - range.location),
+                    closing: NSRange(location: closingStart, length: NSMaxRange(range) - closingStart))
+    }
+
+    /// The inline spans of a line, outermost first.
+    static func spans(in line: Line, of s: NSTextStorage) -> [Span] {
+        guard line.content.length > 0 else { return [] }
+        var starts: [Int] = []
+        s.enumerateAttribute(.mdSpan, in: line.content) { value, _, _ in
+            if let range = (value as? NSValue)?.rangeValue, !starts.contains(range.location) { starts.append(range.location) }
+        }
+        return starts.compactMap { span(at: $0, in: s) }.sorted {
+            $0.range.location != $1.range.location ? $0.range.location < $1.range.location : $0.range.length > $1.range.length
+        }
+    }
+
+    /// The closing delimiters right after `p` of the bold, italic and strike spans whose text ends at `p`
+    /// (with any closing right after those, of spans ending there too). A span cannot end with a space, so
+    /// spaces typed at `p` go after them.
+    static func closings(endingTextAt p: Int, in s: NSTextStorage) -> NSRange? {
+        let spans = self.spans(in: line(at: p, in: s), of: s).filter { [.bold, .italic, .boldItalic, .strike].contains($0.kind) }
+        var end = p
+        while let span = spans.first(where: { $0.closing.location == end }) { end = NSMaxRange(span.range) }
+        return end > p ? NSRange(location: p, length: end - p) : nil
+    }
+
+    // MARK: Caret
+
+    /// Moves a caret that would stop inside hidden syntax to where it can be seen: after a block's
+    /// marker (or, one step left from the block's text, to the end of the line above), and out of a
+    /// delimiter towards the side it was moving to (the end, for a click). Between an escape's backslash
+    /// and its character is inside too: the two show as one character.
+    static func adjustCaret(_ p: Int, from old: Int, in s: NSTextStorage) -> Int {
+        guard s.length > 0 else { return p }
+        let line = line(at: p, in: s)
+        if let prefix = line.prefix, p >= prefix.location, p < NSMaxRange(prefix) {
+            if old == NSMaxRange(prefix), p == old - 1, prefix.location > 0 { return self.line(at: prefix.location - 1, in: s).contentsEnd }
+            return NSMaxRange(prefix)
+        }
+        guard p > line.range.location, p < line.contentsEnd else { return p }
+        if isEscapeBackslash(p - 1, in: s) { return p > old ? p + 1 : adjustCaret(p - 1, from: p, in: s) }
+        guard let delimiter = delimiter(around: p, in: s) else { return p }
+        return p < old ? delimiter.location : NSMaxRange(delimiter)
+    }
+
+    /// A selection keeps whole pieces of syntax: an end inside a delimiter moves outwards, and a
+    /// selection starting inside a block marker takes the whole marker. A selection of nothing visible
+    /// (undo can leave a hidden marker selected) becomes a caret, so typing cannot replace it unseen.
+    static func adjustSelection(_ r: NSRange, in s: NSTextStorage) -> NSRange {
+        guard r.length > 0 else { return r }
+        if onlySyntax(between: r.location, and: NSMaxRange(r), in: s) {
+            return NSRange(location: adjustCaret(NSMaxRange(r), from: NSMaxRange(r), in: s), length: 0)
+        }
+        var start = r.location, end = NSMaxRange(r)
+        if let delimiter = delimiter(around: start, in: s) { start = delimiter.location }
+        if isEscapeBackslash(start - 1, in: s) { start -= 1 }
+        if let delimiter = delimiter(around: end, in: s) { end = NSMaxRange(delimiter) }
+        if isEscapeBackslash(end - 1, in: s) { end += 1 }
+        let first = line(at: start, in: s)
+        if let prefix = first.prefix, start > prefix.location, start < NSMaxRange(prefix) { start = prefix.location }
+        let last = line(at: end, in: s)
+        if let prefix = last.prefix, end > prefix.location, end < NSMaxRange(prefix) { end = NSMaxRange(prefix) }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Where one press of → (or ←) takes the caret from `p`: past one visible character and the hidden
+    /// syntax next to it, so that every press moves the caret on screen; leftwards out of a block's
+    /// text to the end of the line above.
+    static func step(from p: Int, forward: Bool, in s: NSTextStorage) -> Int {
+        let ns = s.string as NSString
+        var q = p
+        while true {
+            let next = forward ? (q < ns.length ? NSMaxRange(ns.rangeOfComposedCharacterSequence(at: q)) : q)
+                               : (q > 0 ? ns.rangeOfComposedCharacterSequence(at: q - 1).location : q)
+            guard next != q else { return q }
+            let crossed = forward ? q : next
+            q = next
+            let line = line(at: q, in: s)
+            if let prefix = line.prefix, q >= prefix.location, q < NSMaxRange(prefix) {
+                if forward { return NSMaxRange(prefix) }
+                return prefix.location > 0 ? self.line(at: prefix.location - 1, in: s).contentsEnd : p
+            }
+            guard isHidden(crossed, in: s) else {
+                // Leftwards, an escape's hidden backslash goes with its character.
+                return !forward && isEscapeBackslash(q - 1, in: s) ? q - 1 : q
+            }
+        }
+    }
+
+    /// Where ⌥⌫ (⌥⌦) deletes to from `p`: the start (end) of the word before (after) it, in what the
+    /// line shows.
+    static func wordBoundary(from p: Int, forward: Bool, in s: NSTextStorage) -> Int {
+        let line = line(at: p, in: s)
+        let ns = s.string as NSString
+        var indices: [Int] = []
+        var units: [unichar] = []
+        for i in line.contentStart..<line.contentsEnd where !isHidden(i, in: s) {
+            indices.append(i)
+            units.append(ns.character(at: i))
+        }
+        let shown = NSString(characters: units, length: units.count)
+        let caret = indices.firstIndex { $0 >= p } ?? indices.count
+        var words: [NSRange] = []
+        shown.enumerateSubstrings(in: NSRange(location: 0, length: shown.length), options: [.byWords, .substringNotRequired]) {
+            _, range, _, _ in words.append(range)
+        }
+        if forward {
+            let end = words.first { NSMaxRange($0) > caret }.map(NSMaxRange) ?? indices.count
+            return end > 0 ? NSMaxRange(ns.rangeOfComposedCharacterSequence(at: indices[end - 1])) : p
+        }
+        let start = words.last { $0.location < caret }?.location ?? 0
+        return start < indices.count ? ns.rangeOfComposedCharacterSequence(at: indices[start]).location : line.contentStart
+    }
+
+    // MARK: Deleting
+
+    enum Deletion: Equatable {
+        case edit(Edit)
+        /// Nothing to delete (at the very start or end of the note).
+        case nothing
+    }
+
+    /// What Backspace at caret `p` does, or nil for the text view's own behaviour (an ordinary
+    /// character, so typing and deleting keep coalescing into one undo step).
+    static func deleteBackward(at p: Int, in s: NSTextStorage) -> Deletion? {
+        let line = line(at: p, in: s)
+        // A divider is deleted as a whole (the caret can only be at its end).
+        if line.kind == .rule, p >= line.contentStart { return .edit(removing(wholeLine(line, in: s))) }
+        // Backspace acts on what is visible: hidden syntax right before the caret does not count.
+        var q = p
+        while q > line.contentStart, isHidden(q - 1, in: s) { q -= 1 }
+        // At the start of a block's text the block becomes plain text (its indentation stays), as in Notion.
+        if let prefix = line.prefix, q == NSMaxRange(prefix) { return .edit(removing(marker(of: line, in: s))) }
+        if q == line.range.location {
+            guard q > 0 else { return .nothing }
+            let above = self.line(at: q - 1, in: s)
+            if above.kind == .rule { return .edit(removing(wholeLine(above, in: s))) }
+            // Joins the lines (the whole line break, "\r\n" too).
+            return q == p ? nil : .edit(removing(NSRange(location: above.contentsEnd, length: q - above.contentsEnd)))
+        }
+        let character = self.character(at: q - 1, in: s)
+        let edit = deletion(of: character, in: s)
+        return q == p && edit.range == character && edit.string.isEmpty ? nil : .edit(edit)
+    }
+
+    /// What Delete (forward) at caret `p` does, or nil for the text view's own behaviour.
+    static func deleteForward(at p: Int, in s: NSTextStorage) -> Deletion? {
+        let line = line(at: p, in: s)
+        if line.kind == .rule { return .edit(removing(wholeLine(line, in: s))) }
+        var q = p
+        while q < line.contentsEnd, isHidden(q, in: s), !isEscapeBackslash(q, in: s) { q += 1 }
+        if q == line.contentsEnd {
+            guard line.hasNewline else { return q == p ? nil : .nothing }
+            if NSMaxRange(line.range) < s.length {
+                let below = self.line(at: NSMaxRange(line.range), in: s)
+                if below.kind == .rule { return .edit(removing(wholeLine(below, in: s))) }
+                // The block below joins this line without its marker, as in Notion.
+                if let prefix = below.prefix {
+                    return .edit(removing(NSRange(location: line.contentsEnd, length: NSMaxRange(prefix) - line.contentsEnd)))
+                }
+            }
+            let lineBreak = NSRange(location: line.contentsEnd, length: NSMaxRange(line.range) - line.contentsEnd)
+            return q == p ? nil : .edit(removing(lineBreak))
+        }
+        let character = self.character(at: isEscapeBackslash(q, in: s) ? q + 1 : q, in: s)
+        let edit = deletion(of: character, in: s)
+        return q == p && edit.range == character && edit.string.isEmpty ? nil : .edit(edit)
+    }
+
+    /// Deleting `r` (a selection, or what a key deletes) as the user sees it: hidden syntax in it that
+    /// belongs to a span reaching outside it stays ("**bo|ld** te|xt" leaves "**bo**xt"), an escaped
+    /// character goes with its backslash, a span left with no visible text goes whole (no empty "****" or
+    /// "[](url)" is left behind), and a block whose line break goes joins the line above without its
+    /// marker. The rest must show as it did: where Markdown would read it differently ("*a*x*b*" without
+    /// "x"), it is rewritten (InlineFormatting.remainder). With `replacing` (text is about to replace the
+    /// selection), a span whose text is selected stays, empty, for the new text to go in, as in Notion.
+    static func deletion(of r: NSRange, in s: NSTextStorage, replacing: Bool = false) -> Edit {
+        guard r.length > 0 else { return Edit(range: r, string: "", caret: r.location) }
+        var r = r
+        let next = line(at: NSMaxRange(r), in: s)
+        if !replacing, NSMaxRange(r) == next.range.location, next.range.location > 0, let prefix = next.prefix {
+            r = NSUnionRange(r, prefix)
+        }
+        var deleted = IndexSet(integersIn: r.location..<NSMaxRange(r))
+        for i in r.location..<NSMaxRange(r) {
+            if let span = span(at: i, in: s), NSIntersectionRange(span.range, r) != span.range { deleted.remove(i) }
+            if isEscapeBackslash(i, in: s), i + 1 >= NSMaxRange(r) { deleted.remove(i) }
+        }
+        if isEscapeBackslash(r.location - 1, in: s) { deleted.insert(r.location - 1) }
+        var spans: [Span] = []
+        var location = r.location
+        repeat {
+            let line = line(at: location, in: s)
+            spans += self.spans(in: line, of: s)
+            location = NSMaxRange(line.range)
+        } while location < NSMaxRange(r) && location < s.length
+        var emptied = true
+        while emptied {
+            emptied = false
+            for span in spans.reversed() where !deleted.contains(integersIn: span.range.location..<NSMaxRange(span.range)) {
+                if replacing, r.location >= span.content.location, NSMaxRange(r) <= NSMaxRange(span.content) { continue }
+                let content = span.content.location..<NSMaxRange(span.content)
+                if !content.contains(where: { !deleted.contains($0) && !isHidden($0, in: s) }) {
+                    deleted.insert(integersIn: span.range.location..<NSMaxRange(span.range))
+                    emptied = true
+                }
+            }
+        }
+        guard let first = deleted.first, let last = deleted.last else {
+            return Edit(range: NSRange(location: r.location, length: 0), string: "", caret: r.location)
+        }
+        // The lines the deletion touches, which become one.
+        let start = line(at: first, in: s).range.location
+        let region = NSRange(location: start, length: line(at: last + 1, in: s).contentsEnd - start)
+        let ns = s.string as NSString
+        let kept = (region.location..<NSMaxRange(region)).filter { !deleted.contains($0) }.map { ns.character(at: $0) }
+        var result = Edit(range: region, string: String(utf16CodeUnits: kept, count: kept.count),
+                          caret: r.location - deleted.count(in: min(first, r.location)..<r.location))
+        let nearSyntax = (max(first - 1, 0)...min(last + 1, s.length - 1)).contains { isHidden($0, in: s) }
+        if !replacing, nearSyntax, let repaired = InlineFormatting.remainder(of: region, deleting: deleted, in: s, caret: r.location) {
+            result = Edit(range: region, string: repaired.text, caret: region.location + repaired.caret)
+        }
+        return minimal(result, in: s)
+    }
+
+    /// `edit` narrowed to what actually changes, on whole characters (so that undo selects just that).
+    static func minimal(_ edit: Edit, in s: NSTextStorage) -> Edit {
+        let old = (s.string as NSString).substring(with: edit.range) as NSString
+        let new = edit.string as NSString
+        var prefix = 0, suffix = 0
+        while prefix < old.length, prefix < new.length, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        while suffix < old.length - prefix, suffix < new.length - prefix,
+              old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        func splits(_ string: NSString, _ i: Int) -> Bool {
+            i > 0 && i < string.length && string.rangeOfComposedCharacterSequence(at: i).location != i
+        }
+        while prefix > 0, splits(old, prefix) || splits(new, prefix) { prefix -= 1 }
+        while suffix > 0, splits(old, old.length - suffix) || splits(new, new.length - suffix) { suffix -= 1 }
+        return Edit(range: NSRange(location: edit.range.location + prefix, length: old.length - prefix - suffix),
+                    string: new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix)),
+                    caret: edit.caret)
+    }
+
+    private static func removing(_ range: NSRange) -> Edit { Edit(range: range, string: "", caret: range.location) }
+
+    /// The block marker without the indentation before it (Backspace keeps the nesting).
+    private static func marker(of line: Line, in s: NSTextStorage) -> NSRange {
+        guard let prefix = line.prefix else { return NSRange(location: line.range.location, length: 0) }
+        guard line.isListItem else { return prefix }
+        let ns = s.string as NSString
+        var start = prefix.location
+        while start < NSMaxRange(prefix), ns.character(at: start) == 0x09 || ns.character(at: start) == 0x20 { start += 1 }
+        return NSRange(location: start, length: NSMaxRange(prefix) - start)
+    }
+
+    /// A line with its newline (or, for the last line, with the newline before it).
+    private static func wholeLine(_ line: Line, in s: NSTextStorage) -> NSRange {
+        if line.hasNewline || line.range.location == 0 { return line.range }
+        return NSRange(location: line.range.location - 1, length: line.range.length + 1)
+    }
+
+    private static func character(at i: Int, in s: NSTextStorage) -> NSRange {
+        (s.string as NSString).rangeOfComposedCharacterSequence(at: i)
+    }
+
+    // MARK: Return
+
+    /// What Return at caret `p` does, or nil for a plain line break.
+    static func newline(at p: Int, in s: NSTextStorage) -> Edit? {
+        let line = line(at: p, in: s)
+        guard line.holdsInlineText else { return nil }
+        let ns = s.string as NSString
+        if let prefix = line.prefix, p <= visibleContentStart(of: line, in: s) {
+            let marker = ns.substring(with: prefix)
+            guard visibleContentStart(of: line, in: s) < line.contentsEnd else {
+                // Return on an empty item ends the list; an empty heading or quote gets a line below.
+                return line.isListItem ? removing(prefix) : nil
+            }
+            if line.isListItem, let empty = listPrefix(marker, next: false, keepCheck: false),
+               let this = listPrefix(marker, next: true, keepCheck: true) {
+                // An empty item above, as in Notion; this one keeps its text and its check mark.
+                let string = empty + "\n" + this
+                return Edit(range: prefix, string: string, caret: p + (string as NSString).length - prefix.length)
+            }
+            // A heading or quote stays as it is, with an empty line above it.
+            return Edit(range: NSRange(location: line.range.location, length: 0), string: "\n", caret: p + 1)
+        }
+        // Elsewhere the line breaks at the caret, moved out of the delimiters it touches ("**ab|**" breaks
+        // after the "**"); spans the caret is inside close before the break and open again after it.
+        var q = p
+        if isEscapeBackslash(q - 1, in: s) { q -= 1 }
+        let spans = self.spans(in: line, of: s)
+        var moved = true
+        while moved {
+            moved = false
+            for span in spans where span.opening.length > 0 {
+                if q == span.content.location { q = span.range.location; moved = true }
+                if q == NSMaxRange(span.content) { q = NSMaxRange(span.range); moved = true }
+            }
+        }
+        var continuation = "\n"
+        if line.isListItem, let prefix = line.prefix, let next = listPrefix(ns.substring(with: prefix), next: true, keepCheck: false) {
+            continuation += next
+        }
+        if spans.contains(where: { $0.content.location < q && q < NSMaxRange($0.content) }) {
+            let lineRange = NSRange(location: line.range.location, length: line.contentsEnd - line.range.location)
+            let split = InlineFormatting.lineBreak(at: q - line.range.location, in: ns.substring(with: lineRange),
+                                                   continuation: continuation)
+            return Edit(range: lineRange, string: split.text, caret: line.range.location + split.caret)
+        }
+        if q == p, continuation == "\n" { return nil }
+        return Edit(range: NSRange(location: q, length: 0), string: continuation,
+                    caret: q + (continuation as NSString).length)
+    }
+
+    private static let listMarker = makeRegex(#"^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))([ \t]+)(?:\[([ xX])\]([ \t]+))?"#)
+
+    /// A list item's prefix written for another item of the list: with the next number, and with the
+    /// check box kept or emptied.
+    static func listPrefix(_ prefix: String, next: Bool, keepCheck: Bool) -> String? {
+        let ns = prefix as NSString
+        guard let m = listMarker.firstMatch(in: prefix, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        func group(_ i: Int) -> String? { m.range(at: i).location == NSNotFound ? nil : ns.substring(with: m.range(at: i)) }
+        var result = group(1) ?? ""
+        if let number = group(3).flatMap({ Int($0) }) {
+            result += "\(next ? number + 1 : number)" + (group(4) ?? ".")
+        } else {
+            result += group(2) ?? "-"
+        }
+        result += group(5) ?? " "
+        if let check = group(6) { result += "[" + (keepCheck ? check : " ") + "]" + (group(7) ?? " ") }
+        return result
+    }
+}
