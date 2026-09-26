@@ -1,4 +1,4 @@
-// Renders the app icon (a yellow sticky with the Markdown mark) to a 1024 px PNG.
+// Renders the app icon (a yellow sticky on a white tile) to a 1024 px PNG.
 // Used by scripts/make-icon.sh; run: swift scripts/make-icon.swift <output.png>
 import AppKit
 
@@ -6,10 +6,24 @@ let size: CGFloat = 1024
 let output = CommandLine.arguments.dropFirst().first ?? "icon_1024.png"
 
 let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
-    // Paper with a soft shadow, inside the standard macOS icon grid (~80% of the canvas).
-    let inset: CGFloat = 100
-    let paper = NSRect(x: inset, y: inset, width: size - 2 * inset, height: size - 2 * inset)
-    let fold: CGFloat = 150
+    // The white tile: the macOS icon shape (824 px square, rounded, in the 1024 px canvas), so that
+    // macOS does not put the icon on a gray tile of its own.
+    let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
+    let tileShape = NSBezierPath(roundedRect: tile, xRadius: 185, yRadius: 185)
+    NSGraphicsContext.saveGraphicsState()
+    let tileShadow = NSShadow()
+    tileShadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+    tileShadow.shadowBlurRadius = 20
+    tileShadow.shadowOffset = NSSize(width: 0, height: -8)
+    tileShadow.set()
+    NSColor.white.setFill()
+    tileShape.fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    // The sticky, with a soft shadow on the tile.
+    let inset: CGFloat = 232
+    let paper = NSRect(x: inset, y: inset + 12, width: size - 2 * inset, height: size - 2 * inset)
+    let fold: CGFloat = 104
 
     let shape = NSBezierPath()
     shape.move(to: NSPoint(x: paper.minX, y: paper.maxY))
@@ -21,9 +35,9 @@ let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _
 
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
-    shadow.shadowBlurRadius = 28
-    shadow.shadowOffset = NSSize(width: 0, height: -14)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.2)
+    shadow.shadowBlurRadius = 22
+    shadow.shadowOffset = NSSize(width: 0, height: -10)
     shadow.set()
     NSColor(srgbRed: 1.00, green: 0.93, blue: 0.45, alpha: 1).setFill()
     shape.fill()
@@ -40,33 +54,7 @@ let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _
 
     // Top band like a Stickies title bar.
     NSColor(srgbRed: 0.98, green: 0.86, blue: 0.30, alpha: 1).setFill()
-    NSRect(x: paper.minX, y: paper.maxY - 90, width: paper.width, height: 90).fill()
-
-    // Markdown mark: "M" and a down arrow.
-    let ink = NSColor(white: 0.18, alpha: 1)
-    let attributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 360, weight: .heavy),
-        .foregroundColor: ink,
-    ]
-    let m = NSAttributedString(string: "M", attributes: attributes)
-    let mSize = m.size()
-    let baseY = paper.midY - mSize.height / 2 - 40
-    m.draw(at: NSPoint(x: paper.minX + 140, y: baseY))
-
-    let arrowX = paper.minX + 140 + mSize.width + 130
-    let arrowTop = baseY + mSize.height * 0.78
-    let arrowBottom = baseY + mSize.height * 0.2
-    let arrow = NSBezierPath()
-    arrow.lineWidth = 56
-    arrow.lineCapStyle = .round
-    arrow.lineJoinStyle = .round
-    arrow.move(to: NSPoint(x: arrowX, y: arrowTop))
-    arrow.line(to: NSPoint(x: arrowX, y: arrowBottom))
-    arrow.move(to: NSPoint(x: arrowX - 80, y: arrowBottom + 80))
-    arrow.line(to: NSPoint(x: arrowX, y: arrowBottom))
-    arrow.line(to: NSPoint(x: arrowX + 80, y: arrowBottom + 80))
-    ink.setStroke()
-    arrow.stroke()
+    NSRect(x: paper.minX, y: paper.maxY - 62, width: paper.width, height: 62).fill()
     return true
 }
 
