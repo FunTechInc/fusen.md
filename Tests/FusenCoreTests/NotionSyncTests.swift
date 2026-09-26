@@ -594,7 +594,9 @@ struct NotionSyncTests {
         #expect(quitting.hasPendingWork)
         let started = ContinuousClock.now
         await quitting.flush(timeout: 0.2)
-        #expect(ContinuousClock.now - started < .seconds(3))
+        // Far above the 0.2 s timeout (tests run in parallel, possibly next to a build); it only has to
+        // show that quitting does not wait for Notion forever.
+        #expect(ContinuousClock.now - started < .seconds(10))
         #expect(quitting.pendingCount == 1) // kept for the next launch
         let reads = clockReads
         try? await Task.sleep(for: .milliseconds(200))

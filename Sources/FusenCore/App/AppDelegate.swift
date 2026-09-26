@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var didReportWriteError = false
     private var notionSync: NotionSync?
     private var settingsWindow: SettingsWindowController?
+    private var toggleShortcut: ToggleShortcut?
 
     init(rootURL: URL = NoteStore.defaultRootURL) {
         store = NoteStore(rootURL: rootURL)
@@ -89,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         thinningTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.history.thin() }
         }
+        toggleShortcut = ToggleShortcut { [weak self] in self?.toggleNotesVisibility() }
         NSApp.activate()
         // Once the stickies are drawn: after a rebuild, reading the token can bring up a Keychain
         // prompt, which blocks the main thread until it is answered.
@@ -181,6 +183,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.window?.makeKeyAndOrderFront(nil)
         controller.window?.makeFirstResponder(controller.textView)
         reloadHistoryIfVisible()
+    }
+
+    // MARK: Show / hide (global shortcut)
+
+    /// For the global shortcut: hides every note if any is on screen; otherwise (hidden, or behind other
+    /// windows) brings them all to the front.
+    func toggleNotesVisibility() {
+        let windows = controllers.values.compactMap(\.window)
+        let onScreen = !NSApp.isHidden && windows.contains { $0.isVisible && $0.occlusionState.contains(.visible) }
+        if onScreen {
+            NSApp.hide(nil)
+            return
+        }
+        NSApp.unhide(nil)
+        NSApp.activate()
+        windows.forEach { $0.orderFrontRegardless() }
+        if windows.isEmpty { newNote(nil) }
     }
 
     // MARK: Markdown display
@@ -295,7 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showSettings(_ sender: Any?) {
         guard let notionSync else { return }
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(sync: notionSync) }
+        if settingsWindow == nil, let toggleShortcut {
+            settingsWindow = SettingsWindowController(sync: notionSync, toggleShortcut: toggleShortcut)
+        }
         settingsWindow?.show()
     }
 

@@ -1,14 +1,21 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
-/// The 設定 window (⌘,). For now it only holds the Notion mirror.
+/// The 設定 window (⌘,): 一般 (the show/hide hot key) and Notion (the mirror).
 @MainActor
 final class SettingsWindowController: NSWindowController {
     private let sync: NotionSync
 
-    init(sync: NotionSync) {
+    init(sync: NotionSync, toggleShortcut: ToggleShortcut) {
         self.sync = sync
-        let window = NSWindow(contentViewController: NSHostingController(rootView: NotionSettingsView(sync: sync)))
+        let root = TabView {
+            GeneralSettingsView(toggleShortcut: toggleShortcut)
+                .tabItem { Label("一般", systemImage: "gearshape") }
+            NotionSettingsView(sync: sync)
+                .tabItem { Label("Notion", systemImage: "arrow.triangle.2.circlepath") }
+        }
+        let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.title = "設定"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
@@ -25,6 +32,76 @@ final class SettingsWindowController: NSWindowController {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+}
+
+/// The global show/hide shortcut. Recording captures the next key press in this window; the current
+/// hot key is switched off meanwhile so pressing the same combination records it instead of firing.
+struct GeneralSettingsView: View {
+    let toggleShortcut: ToggleShortcut
+    @State private var isRecording = false
+    @State private var monitor: Any?
+    @State private var hint: String?
+
+    var body: some View {
+        Form {
+            Section("表示・非表示のショートカット") {
+                Text("ほかのアプリを使っているときでも、このショートカットで付箋をすべて隠したり、表示したりできます。付箋が見えているときは隠し、隠れているかほかのウインドウの後ろにあるときは手前に表示します。")
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text(isRecording ? "キーを押してください…" : (toggleShortcut.shortcut?.displayString ?? "使わない"))
+                        .font(.title3.monospaced())
+                        .foregroundStyle(isRecording ? .secondary : .primary)
+                    Spacer()
+                    Button(isRecording ? "キャンセル" : "変更…") { isRecording ? stopRecording() : startRecording() }
+                    Button("使わない") { toggleShortcut.set(nil) }
+                        .disabled(isRecording || toggleShortcut.shortcut == nil)
+                    if toggleShortcut.shortcut != .defaultToggle {
+                        Button("標準に戻す（\(HotKeyShortcut.defaultToggle.displayString)）") { toggleShortcut.set(.defaultToggle) }
+                            .disabled(isRecording)
+                    }
+                }
+                if let error = toggleShortcut.errorMessage, !isRecording {
+                    Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
+                Text(hint ?? "⌘・⌃・⌥ のどれかを含む組み合わせにしてください。Esc で取り消せます。ほかのアプリと同じ組み合わせにすると、どちらか一方しか反応しないことがあります。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        hint = nil
+        toggleShortcut.suspend()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == UInt16(kVK_Escape) {
+                stopRecording()
+            } else if let shortcut = HotKeyShortcut(event: event) {
+                isRecording = false
+                removeMonitor()
+                toggleShortcut.set(shortcut)
+            } else {
+                hint = "⌘・⌃・⌥ のどれかと一緒に押してください。"
+                NSSound.beep()
+            }
+            return nil // the key press only records, it types nothing
+        }
+    }
+
+    private func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        hint = nil
+        removeMonitor()
+        toggleShortcut.activate()
+    }
+
+    private func removeMonitor() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }
 
