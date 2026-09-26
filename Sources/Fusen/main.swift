@@ -1,0 +1,3 @@
+import FusenCore
+
+FusenApp.run()
