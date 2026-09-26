@@ -369,6 +369,7 @@ final class MarkdownTextView: NSTextView {
             if let style, style.location == start {
                 styleTyped(text, replacing: NSRange(location: start, length: (text as NSString).length), style)
             }
+            makeToDoIfTyped(text)
             return
         }
         var replacementRange = replacementRange
@@ -410,6 +411,33 @@ final class MarkdownTextView: NSTextView {
             if content == "---", caret == now.contentsEnd, now.kind != .code, now.kind != .fence {
                 super.insertText("\n", replacementRange: NSRange(location: caret, length: 0))
             }
+        }
+        makeToDoIfTyped(text)
+    }
+
+    /// Notion's "[]": typed at the start of a line (or of a list item's text), the block becomes a to-do.
+    private func makeToDoIfTyped(_ text: String) {
+        guard concealsMarkdown, text.hasSuffix("]"), let storage = textStorage, selectedRange().length == 0 else { return }
+        let caret = selectedRange().location
+        let ns = storage.string as NSString
+        guard caret >= 2, ns.substring(with: NSRange(location: caret - 2, length: 2)) == "[]" else { return }
+        let bracket = caret - 2
+        let line = ConcealedEditing.line(at: caret, in: storage)
+        let marker: String
+        switch line.kind {
+        case .text:
+            // Indentation before it nests the to-do.
+            let before = ns.substring(with: NSRange(location: line.range.location, length: bracket - line.range.location))
+            guard before.allSatisfy({ $0 == " " || $0 == "\t" }) else { return }
+            marker = "- [ ] "
+        case .bullet, .ordered:
+            guard let prefix = line.prefix, NSMaxRange(prefix) == bracket else { return }
+            marker = "[ ] "
+        default:
+            return
+        }
+        if replaceCharacters(in: NSRange(location: bracket, length: 2), with: marker, actionName: "チェックボックス") {
+            setSelectedRange(NSRange(location: bracket + (marker as NSString).length, length: 0))
         }
     }
 

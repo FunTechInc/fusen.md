@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 
-/// The 設定 window (⌘,): 一般 (the show/hide hot key) and Notion (the mirror).
+/// The 設定 window (⌘,): 一般 (the show/hide hot key), Notion (the mirror) and Markdown (how to write).
 @MainActor
 final class SettingsWindowController: NSWindowController {
     private let sync: NotionSync
@@ -14,6 +14,8 @@ final class SettingsWindowController: NSWindowController {
                 .tabItem { Label("一般", systemImage: "gearshape") }
             NotionSettingsView(sync: sync)
                 .tabItem { Label("Notion", systemImage: "arrow.triangle.2.circlepath") }
+            MarkdownSettingsView()
+                .tabItem { Label("Markdown", systemImage: "textformat") }
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.title = "設定"

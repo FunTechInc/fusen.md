@@ -394,6 +394,62 @@ struct ConcealedEditingTests {
         }
     }
 
+    // MARK: Notion's "[]"
+
+    @Test func bracketsMakeAToDo() {
+        let empty = ConcealedEditor("")
+        empty.type("[]")
+        #expect(empty.text == "- [ ] ")
+        #expect(ConcealedEditing.line(at: 0, in: empty.storage).kind == .task)
+        #expect(empty.caret == 6)
+        empty.type("牛乳")
+        #expect(empty.text == "- [ ] 牛乳")
+        let existing = ConcealedEditor("買い物")
+        existing.click(0)
+        existing.type("[]")
+        #expect(existing.text == "- [ ] 買い物")
+        #expect(existing.caret == existing.index(of: "買"))
+        let bullet = ConcealedEditor("- ")
+        bullet.click(2)
+        bullet.type("[]")
+        #expect(bullet.text == "- [ ] ")
+        let ordered = ConcealedEditor("1. ")
+        ordered.click(3)
+        ordered.type("[]")
+        #expect(ordered.text == "1. [ ] ")
+        let nested = ConcealedEditor("\t")
+        nested.click(1)
+        nested.type("[]")
+        #expect(nested.text == "\t- [ ] ")
+        // Committed by the IME (half-width brackets) too.
+        let ime = ConcealedEditor("")
+        ime.key {
+            ime.textView.setMarkedText("[]", selectedRange: NSRange(location: 2, length: 0),
+                                       replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+        ime.key { ime.textView.insertText("[]", replacementRange: ime.textView.markedRange()) }
+        #expect(ime.text == "- [ ] ")
+    }
+
+    @Test func bracketsElsewhereStayAsTyped() {
+        let middle = ConcealedEditor("a")
+        middle.click(1)
+        middle.type("[]")
+        #expect(middle.text == "a[]")
+        let code = ConcealedEditor("```\n")
+        code.click(4)
+        code.type("[]")
+        #expect(code.text == "```\n[]")
+        let heading = ConcealedEditor("## ")
+        heading.click(3)
+        heading.type("[]")
+        #expect(heading.text == "## []")
+        let raw = ConcealedEditor("")
+        raw.setConceals(false)
+        raw.type("[]")
+        #expect(raw.text == "[]")
+    }
+
     // MARK: Second review
 
     /// What the note shows, with the hidden syntax left out.
