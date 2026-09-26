@@ -121,4 +121,21 @@ struct MarkdownStylerTests {
         #expect(NoteTitle.derive(from: "- [ ] 牛乳を買う") == "牛乳を買う")
         #expect(NoteTitle.derive(from: "  \n") == "無題のメモ")
     }
+
+    @Test func backslashEscapesMakeSyntaxLiteral() {
+        let st = styled(#"\*\*not bold\*\* と 2\*3\*4 と \`x\` と [a]\(b)"#)
+        #expect(!isBold(font(st, "not")))
+        #expect(!has(st, .obliqueness, "3"))
+        #expect(font(st, "x")?.isFixedPitch != true)
+        #expect(st.attribute(.mdMarker, at: 0, effectiveRange: nil) != nil)   // the backslash is syntax
+        #expect(st.attribute(.mdEscaped, at: 1, effectiveRange: nil) != nil)  // the star is literal
+        #expect(line(styled(##"\# 見出しではない"##), "見出し") == .text)
+        #expect(line(styled(#"\- 箇条書きではない"#), "箇条書き") == .text)
+        // A backslash before a letter is just a backslash.
+        let path = styled(#"C:\Users"#)
+        #expect(path.attribute(.mdMarker, at: 2, effectiveRange: nil) == nil)
+        // Inside code, a backslash is literal.
+        let code = styled(#"`a\*b`"#)
+        #expect(code.attribute(.mdEscaped, at: 3, effectiveRange: nil) == nil)
+    }
 }

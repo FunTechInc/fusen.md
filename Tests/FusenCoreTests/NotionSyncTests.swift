@@ -267,6 +267,60 @@ struct NotionSyncTests {
         }
     }
 
+    @Test func anImportIsNeitherSentBackNorHeld() async throws {
+        let long = String(repeating: "長い本文。", count: 72) // 360 characters
+        let id = await pushedNote(long)
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: "残した一行")
+        let result = try await sync.fetchImport(id)
+        store.updateBody(result.text, for: id) // what replacing the sticky's text does
+        sync.didImport(id, text: result.text, pushedHash: result.pushedHash)
+        clock.advance(10)
+        await sync.processDue()
+        #expect(!api.writes.contains { if case .replace = $0 { true } else { false } })
+        #expect(api.writes.contains { if case .update = $0 { true } else { false } }) // 名前 and 更新日時
+        #expect(sync.heldCount == 0)
+        api.calls = []
+        clock.advance(16 * 60)
+        await sync.processDue()
+        #expect(api.writes.isEmpty)
+        // A real edit after the import is sent as usual.
+        await edit(id, "残した一行と追記")
+        #expect(api.writes.contains { if case .replace(_, let md) = $0 { md == "残した一行と追記" } else { false } })
+    }
+
+    @Test func aPushDuringTheImportIsNotMistakenForTheImport() async throws {
+        let id = await pushedNote("元の本文")
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: "Notionで直した本文")
+        store.updateBody("元の本文に追記", for: id)            // typed just before choosing the import
+        let result = try await sync.fetchImport(id)
+        clock.advance(10)
+        await sync.processDue()                                  // the debounce fires while the alert is open
+        #expect(api.writes.contains { if case .replace(_, let md) = $0 { md == "元の本文に追記" } else { false } })
+        api.calls = []
+        store.updateBody(result.text, for: id)                   // then the user confirms
+        sync.didImport(id, text: result.text, pushedHash: result.pushedHash)
+        clock.advance(10)
+        await sync.processDue()
+        // Notion now holds the older push, so the imported text must be sent.
+        #expect(api.writes.contains { if case .replace(_, let md) = $0 { md == "Notionで直した本文" } else { false } })
+    }
+
+    @Test func importReadErrorsSayTheReadFailed() async throws {
+        let id = await pushedNote("メモ")
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: "x")
+        api.failures = [.validation(message: "in trash")]
+        do {
+            _ = try await sync.fetchImport(id)
+            Issue.record("expected an error")
+        } catch {
+            #expect(error.message.contains("読み込み"))
+        }
+        // A bookmark Notion cannot express comes back as a tag, reported, not refused.
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: #"メモ\n<unknown alt="bookmark"/>"#)
+        let result = try await sync.fetchImport(id)
+        #expect(result.notionOnly == ["取得できなかったブロック"])
+    }
+
     // MARK: Connecting
 
     @Test func connectValidatesCreatesTheDatabaseAndKeepsTheTokenOutOfFiles() async throws {

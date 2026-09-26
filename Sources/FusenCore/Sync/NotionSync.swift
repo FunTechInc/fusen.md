@@ -430,6 +430,9 @@ final class NotionSync {
         let text: String
         /// Notion-only elements (callouts, colors, images, …) that the sticky can only show as text.
         let notionOnly: [String]
+        /// What had been pushed when the page was read; if a push happens before didImport, Notion no
+        /// longer holds `text`.
+        var pushedHash: String? = nil
     }
 
     /// The note has a page in Notion to import from (the sync may be paused; it must be connected).
@@ -459,6 +462,8 @@ final class NotionSync {
             page = try await api.retrieveMarkdown(pageID: pageID)
         } catch NotionError.notFound {
             throw SyncError(message: "Notion にこのメモのページが見つかりません。削除されたか、共有が外れた可能性があります。")
+        } catch NotionError.validation(let message) {
+            throw SyncError(message: "Notion がこのページの読み込みを受け付けませんでした（\(message)）。ページがゴミ箱にあるか、大きすぎる可能性があります。")
         } catch {
             throw SyncError(message: Self.describe(error))
         }
@@ -467,7 +472,30 @@ final class NotionSync {
             throw SyncError(message: "Notion のページの一部を読み込めなかったため（大きすぎるか、共有されていないブロックがあります）、取り込みを中止しました。")
         }
         return Import(text: NotionMarkdown.fromNotion(page.markdown),
-                      notionOnly: NotionMarkdown.notionOnlyElements(in: page.markdown))
+                      notionOnly: NotionMarkdown.notionOnlyElements(in: page.markdown),
+                      pushedHash: state.notes[id.uuidString]?.lastPushedHash)
+    }
+
+    /// After 「Notion の内容を取り込む」 replaced the note with `text`: Notion already holds that content,
+    /// so it is not sent back, and the large-deletion guard measures later changes against it (not
+    /// against the older, maybe longer, content). 名前 and 更新日時 still follow, as after a push.
+    func didImport(_ id: UUID, text: String, pushedHash: String?) {
+        loadState()
+        guard var entry = state.notes[id.uuidString], entry.lastPushedHash == pushedHash else { return }
+        let markdown = NotionMarkdown.export(text, styler: styler)
+        entry.lastPushedHash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
+        entry.lastPushedLength = markdown.count
+        entry.propertiesPending = true
+        state.notes[id.uuidString] = entry
+        holds[id] = nil
+        rejected[id] = nil
+        if var item = pending[id] { // only the properties are left to send
+            item.notBefore = nil
+            pending[id] = item
+        }
+        saveState()
+        updateCounts()
+        scheduleWake()
     }
 
     /// Checks the Keychain (for the settings window), without reading the token out.

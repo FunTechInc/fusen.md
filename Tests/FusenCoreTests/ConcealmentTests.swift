@@ -82,6 +82,15 @@ struct ConcealmentTests {
         #expect(e.property(at: 0) == .null)                                  // other lines stay concealed
     }
 
+    @Test func escapeBackslashesAreConcealed() {
+        let e = ConcealedEditor("2\\*3\\*4\n次の行")
+        e.reveal(nil)
+        #expect(e.property(at: 1) == .null)                 // "\\" hidden: shows 2*3*4
+        #expect(e.property(at: 2) != .null)                 // "*" shown
+        e.reveal("2")
+        #expect(e.property(at: 1) != .null)                 // editing the line shows the backslash
+    }
+
     @Test func bulletsBecomeNotionBullets() {
         let e = ConcealedEditor("- 一つ目\n\t- 入れ子")
         e.reveal(nil)

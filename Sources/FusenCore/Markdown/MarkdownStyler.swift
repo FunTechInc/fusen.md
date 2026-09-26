@@ -23,6 +23,9 @@ extension NSAttributedString.Key {
     /// Value: CGFloat — set on the first character of a marker run that, when concealed, is replaced by
     /// a box of this width (checkbox, quote bar), so the text after it does not move.
     static let mdConcealBox = NSAttributedString.Key("MDConcealBox")
+    /// Value: true — a character made literal by a backslash escape ("\\*" shows "*"). The backslash
+    /// itself is `.mdMarker`. Exported verbatim, never matched as syntax.
+    static let mdEscaped = NSAttributedString.Key("MDEscaped")
 }
 
 /// Line kinds, matching the block types of Notion-flavored Markdown.
@@ -105,10 +108,11 @@ final class MarkdownStyler {
     private let codeSpan = makeRegex(#"(`+)(?!`)(.+?)(?<!`)\1(?!`)"#)
     private let link = makeRegex(#"\[([^\]\n]+)\]\(([^()\s]+)(?:[ \t]+"[^"\n]*")?\)"#)
     // ASCII-only so that Japanese text right after a URL ("…/pathを参照") is not swallowed.
-    private let bareURL = makeRegex(#"https?://[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#@$&*+=%]"#)
+    static let bareURLPattern = #"https?://[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#@$&*+=%]"#
+    private let bareURL = makeRegex(MarkdownStyler.bareURLPattern)
     private let bold = makeRegex(#"(\*\*|__)(?=\S)(.+?)(?<=\S)(\1)"#)
-    private let italicStar = makeRegex(#"(?<![*\\])(\*)(?![\s*])(.+?)(?<![\s*\\])(\*)(?!\*)"#)
-    private let italicUnderscore = makeRegex(#"(?<![_\w\\])(_)(?![\s_])(.+?)(?<![\s_\\])(_)(?![_\w])"#)
+    private let italicStar = makeRegex(#"(?<![*])(\*)(?![\s*])(.+?)(?<![\s*])(\*)(?!\*)"#)
+    private let italicUnderscore = makeRegex(#"(?<![_\w])(_)(?![\s_])(.+?)(?<![\s_])(_)(?![_\w])"#)
     private let strike = makeRegex(#"(~~)(?=\S)(.+?)(?<=\S)(~~)"#)
 
     private struct Fence {
@@ -334,8 +338,26 @@ final class MarkdownStyler {
         guard range.length > 1 else { return }
         var claimed: [NSRange] = []
 
-        // `code` first: nothing inside a code span is Markdown.
-        for m in codeSpan.matches(in: text, range: range) {
+        // Backslash escapes (CommonMark): "\\" before one of the app's syntax characters makes it literal.
+        let ns = text as NSString
+        var escaped = IndexSet()
+        var i = range.location
+        while i < NSMaxRange(range) - 1 {
+            if ns.character(at: i) == 0x5C, Self.isEscapable(ns.character(at: i + 1)) {
+                escaped.insert(i + 1)
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+
+        // `code` next: nothing inside a code span is Markdown (not even an escape), but an escaped
+        // backtick cannot open one.
+        var searchFrom = range.location
+        while searchFrom < NSMaxRange(range),
+              let m = codeSpan.firstMatch(in: text, range: NSRange(location: searchFrom, length: NSMaxRange(range) - searchFrom)) {
+            if escaped.contains(m.range.location) { searchFrom = m.range.location + 1; continue }
+            searchFrom = NSMaxRange(m.range)
             let open = m.range(at: 1)
             let close = NSRange(location: NSMaxRange(m.range) - open.length, length: open.length)
             let size = (s.attribute(.font, at: m.range.location, effectiveRange: nil) as? NSFont)?.pointSize
@@ -345,9 +367,21 @@ final class MarkdownStyler {
             dim(close, s)
             claimed.append(m.range)
         }
+        var escapes = IndexSet() // backslash + escaped character: kept apart from `claimed`, which is scanned linearly
+        for index in escaped where isFree(NSRange(location: index - 1, length: 2), claimed) {
+            dim(NSRange(location: index - 1, length: 1), s) // the backslash: hidden like other syntax
+            s.addAttribute(.mdEscaped, value: true, range: NSRange(location: index, length: 1))
+            escapes.insert(integersIn: (index - 1)...index)
+        }
+        func free(_ r: NSRange) -> Bool {
+            isFree(r, claimed) && !escapes.intersects(integersIn: r.location..<NSMaxRange(r))
+        }
 
         // [label](url): the label looks like a Notion link, the syntax around it is Markdown.
-        for m in link.matches(in: text, range: range) where isFree(m.range, claimed) {
+        // Escapes may be inside the label ([\*\*x\*\*](url)), not on the syntax around it.
+        for m in link.matches(in: text, range: range) where isFree(m.range, claimed)
+            && free(NSRange(location: m.range.location, length: 1))
+            && free(NSRange(location: NSMaxRange(m.range(at: 1)), length: NSMaxRange(m.range) - NSMaxRange(m.range(at: 1)))) {
             let label = m.range(at: 1)
             let target = (text as NSString).substring(with: m.range(at: 2))
             dim(NSRange(location: m.range.location, length: 1), s)
@@ -362,7 +396,7 @@ final class MarkdownStyler {
             claimed.append(NSRange(location: tail, length: NSMaxRange(m.range) - tail))
         }
 
-        for m in bareURL.matches(in: text, range: range) where isFree(m.range, claimed) {
+        for m in bareURL.matches(in: text, range: range) where free(m.range) {
             s.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
                              .underlineColor: theme.linkUnderlineColor, .mdBareURL: true], range: m.range)
             if let url = URL(string: (text as NSString).substring(with: m.range)) {
@@ -371,21 +405,23 @@ final class MarkdownStyler {
             claimed.append(m.range)
         }
 
-        applyDelimited(bold, in: range, text, s, &claimed) { addBold($0, s) }
+        applyDelimited(bold, in: range, text, s, &claimed, escapes) { addBold($0, s) }
         // Obliqueness instead of an italic font face: CJK fonts have no italic, so this
         // slants Japanese text as well as Latin text.
-        applyDelimited(italicStar, in: range, text, s, &claimed) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
-        applyDelimited(italicUnderscore, in: range, text, s, &claimed) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
-        applyDelimited(strike, in: range, text, s, &claimed) {
+        applyDelimited(italicStar, in: range, text, s, &claimed, escapes) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
+        applyDelimited(italicUnderscore, in: range, text, s, &claimed, escapes) { s.addAttribute(.obliqueness, value: 0.2, range: $0) }
+        applyDelimited(strike, in: range, text, s, &claimed, escapes) {
             s.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: $0)
         }
     }
 
     private func applyDelimited(_ regex: NSRegularExpression, in range: NSRange, _ text: String,
-                                _ s: NSTextStorage, _ claimed: inout [NSRange], style: (NSRange) -> Void) {
+                                _ s: NSTextStorage, _ claimed: inout [NSRange], _ escapes: IndexSet, style: (NSRange) -> Void) {
         for m in regex.matches(in: text, range: range) {
             let open = m.range(at: 1), close = m.range(at: 3)
-            guard isFree(open, claimed), isFree(close, claimed) else { continue }
+            guard isFree(open, claimed), isFree(close, claimed),
+                  !escapes.intersects(integersIn: open.location..<NSMaxRange(open)),
+                  !escapes.intersects(integersIn: close.location..<NSMaxRange(close)) else { continue }
             style(m.range(at: 2))
             dim(open, s)
             dim(close, s)
@@ -407,6 +443,10 @@ final class MarkdownStyler {
     private func dim(_ range: NSRange, _ s: NSTextStorage) {
         s.addAttributes([.foregroundColor: theme.markerColor, .mdMarker: true], range: range)
     }
+
+    /// Only characters that are syntax in this app: "\\{", "\\%", "\\\"" typed in a note stay as typed.
+    private static let escapable = Set("\\`*_~[]()#+-.>!".utf16)
+    private static func isEscapable(_ c: unichar) -> Bool { escapable.contains(c) }
 
     private func isFree(_ range: NSRange, _ claimed: [NSRange]) -> Bool {
         !claimed.contains { NSIntersectionRange($0, range).length > 0 }

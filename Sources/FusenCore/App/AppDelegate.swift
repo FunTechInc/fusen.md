@@ -356,11 +356,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if !result.notionOnly.isEmpty {
                 info += "\n\nNotion にしかない要素（\(result.notionOnly.joined(separator: "、"))）は、付箋ではタグや記号の文字のまま表示されます。次に Notion へ送るときも文字として送られるため、Notion 側ではその要素が普通の文字になります。"
             }
+            if result.notionOnly.contains("取得できなかったブロック") || result.notionOnly.contains("画像・ファイル") {
+                info += "ブックマーク・埋め込み・アップロードしたファイルは付箋には残らず、次に送ったときに Notion のページからも消えます（ファイルのリンクには有効期限があります）。"
+            }
             alert.informativeText = info
             alert.addButton(withTitle: "取り込む")
             alert.addButton(withTitle: "キャンセル")
             guard alert.runModal() == .alertFirstButtonReturn, controllers[id] === controller else { return }
             controller.replaceText(with: result.text, reason: .notionimport, actionName: "Notionから取り込む")
+            notionSync.didImport(id, text: controller.currentText, pushedHash: result.pushedHash)
         }
     }
 

@@ -245,8 +245,9 @@ enum NotionMarkdown {
                 let string = ns.substring(with: character)
                 if isMarker, string == "_" {
                     out += "*" // _italic_ and __bold__: the format only has * and **
-                } else if isMarker || storage.attribute(.mdCode, at: i, effectiveRange: nil) != nil {
-                    out += string
+                } else if isMarker || storage.attribute(.mdCode, at: i, effectiveRange: nil) != nil
+                            || storage.attribute(.mdEscaped, at: i, effectiveRange: nil) != nil {
+                    out += string // syntax, code, or a character the note already escaped
                 } else {
                     out += NotionMarkdown.escape(string)
                 }
@@ -333,24 +334,12 @@ enum NotionMarkdown {
 
     /// Names (in Japanese) of Notion-only elements in Notion-flavored Markdown — things the sticky can
     /// only show as tags or literal text, and that become plain text in Notion when the note is sent
-    /// back. Code blocks are ignored.
+    /// back. Code blocks, inline code, escaped characters and link targets are ignored, so text the
+    /// app itself sent (`\<callout>`, `` `$x$` ``) is not reported.
     static func notionOnlyElements(in markdown: String) -> [String] {
-        let kinds: [(name: String, pattern: String)] = [
-            ("コールアウト", #"<callout[\s>]"#),
-            ("トグル", #"<details[\s>]|\{[^}\n]*toggle="true""#),
-            ("表", #"<table[\s>]"#),
-            ("目次", #"<table_of_contents"#),
-            ("段組み", #"<columns[\s>]"#),
-            ("サブページ・データベース", #"<(page|database)[\s>]"#),
-            ("メンション", #"<mention-"#),
-            ("文字色・下線", #"<span[\s>]|\{[^}\n]*color=""#),
-            ("画像・ファイル", #"!\[[^\]\n]*\]\(|<(audio|video|file|pdf)[\s>]"#),
-            ("同期ブロック", #"<synced_block"#),
-            ("数式", #"(?m)^\s*\$\$|(?<!\\)\$[^$\n]+(?<!\\)\$"#),
-            ("取得できなかったブロック", #"<unknown[\s/>]"#),
-        ]
         var fence: (character: Character, length: Int)?
         var text: [String] = []
+        var nestedCode = false
         for line in markdown.components(separatedBy: "\n") {
             let body = String(line.drop { $0 == "\t" || $0 == " " })
             if let open = fence {
@@ -361,26 +350,62 @@ enum NotionMarkdown {
             }
             if let open = fenceRun(body) {
                 fence = open
+                if body.count != line.count { nestedCode = true }
                 continue
             }
             text.append(line)
         }
         let joined = text.joined(separator: "\n")
-        return kinds.filter { joined.range(of: $0.pattern, options: [.regularExpression]) != nil }.map(\.name)
+        let withoutCode = joined.replacingOccurrences(of: #"(`+)[^\n]*?\1"#, with: " ", options: .regularExpression)
+        let unescaped = withoutCode.replacingOccurrences(of: #"\\[!-/:-@\[-`{-~]"#, with: " ", options: .regularExpression)
+        let withoutTargets = unescaped.replacingOccurrences(of: #"\]\([^)\n]*\)"#, with: "] ", options: .regularExpression)
+        let kinds: [(name: String, pattern: String, in: String)] = [
+            ("コールアウト", #"<callout[\s>]"#, withoutTargets),
+            ("トグル", #"<details[\s>]|\{[^}\n]*toggle="true""#, withoutTargets),
+            ("表", #"<table[\s>]"#, withoutTargets),
+            ("目次", #"<table_of_contents"#, withoutTargets),
+            ("段組み", #"<columns[\s>]"#, withoutTargets),
+            ("サブページ・データベース", #"<(page|database)[\s>]"#, withoutTargets),
+            ("メンション", #"<mention-"#, withoutTargets),
+            ("文字色・下線", #"<span[\s>]|\{[^}\n]*color=""#, withoutTargets),
+            ("画像・ファイル", #"!\[[^\]\n]*\]\(|<(audio|video|file|pdf)[\s>]"#, unescaped),
+            ("同期ブロック", #"<synced_block"#, withoutTargets),
+            ("会議メモ", #"<meeting-notes"#, withoutTargets),
+            ("引用元", #"\[\^"#, unescaped),
+            ("数式", #"(?m)^\s*\$\$|\$[^$\n]+\$"#, withoutTargets),
+            ("取得できなかったブロック", #"<unknown[\s/>]"#, withoutTargets),
+            // A line break the app cannot keep inside a heading. (A "<br>" inside inline code stays
+            // literal text on import, so it is not reported: the app itself exports such notes.)
+            ("ブロック内の改行", #"(?m)^\t*#{1,6}[ \t][^\n]*<br"#, withoutTargets),
+        ]
+        var names = kinds.filter { $0.in.range(of: $0.pattern, options: .regularExpression) != nil }.map(\.name)
+        if nestedCode { names.append("入れ子のコードブロック") }
+        var seen = Set<String>()
+        return names.filter { seen.insert($0).inserted }
     }
 
-    /// Notion-flavored Markdown back to the app's Markdown (for restoring from Notion). Reverses
-    /// `export`: `<empty-block/>` becomes a blank line, `<br>` a new line (inside a quote, a new `>`
-    /// line), escapes are removed outside code, and links whose text is their URL become bare URLs
-    /// again. Tabs are kept; tags the app does not know (callouts, toggles, …) are left as they are.
+    /// Notion-flavored Markdown back to the app's Markdown (「Notion の内容を取り込む」). Reverses
+    /// `export`: `<empty-block/>` becomes a blank line, and `<br>` a new line — inside a quote a new
+    /// `>` line, inside a list item or to-do an indented line under it.
+    ///
+    /// Notion's backslash escapes are kept only where the app would otherwise read the character as
+    /// syntax (MarkdownStyler decides), so a note that was exported comes back unchanged and `\*`,
+    /// `\#` or `1\.` stay text; an `_` that the app would read as emphasis gets one, because Notion
+    /// never writes emphasis with `_` (`__init__` stays `__init__`). Code, `$…$` and `$$` equations
+    /// and link targets are copied verbatim (parentheses in a target are percent-encoded, which the
+    /// app's links need); a link whose text is its URL becomes a bare URL when the app shows it as one.
+    /// A code block nested under a list item comes back at the top level. Tags the app does not know
+    /// (callouts, toggles, …) are left as they are.
     static func fromNotion(_ markdown: String) -> String {
+        let styler = MarkdownStyler()
         var out: [String] = []
-        var fence: (character: Character, length: Int)?
+        var fence: (character: Character, length: Int, indentation: String)?
+        var inEquation = false
         for line in markdown.components(separatedBy: "\n") {
             let indentation = String(line.prefix { $0 == "\t" || $0 == " " })
             let body = String(line.dropFirst(indentation.count))
             if let open = fence {
-                out.append(line)
+                out.append(line.hasPrefix(open.indentation) ? String(line.dropFirst(open.indentation.count)) : line)
                 if let close = fenceRun(body), close.character == open.character, close.length >= open.length,
                    body.dropFirst(close.length).allSatisfy({ $0 == " " || $0 == "\t" }) {
                     fence = nil
@@ -388,8 +413,17 @@ enum NotionMarkdown {
                 continue
             }
             if let open = fenceRun(body) {
-                fence = open
+                fence = (open.character, open.length, indentation)
+                out.append(body)
+                continue
+            }
+            if body.trimmingCharacters(in: .whitespaces) == "$$" {
+                inEquation.toggle()
                 out.append(line)
+                continue
+            }
+            if inEquation {
+                out.append(appLine(indentation, "", body, styler: styler, literal: true, textOnly: true))
                 continue
             }
             if body == emptyBlock {
@@ -399,19 +433,21 @@ enum NotionMarkdown {
             if body.hasPrefix(">") {
                 let content = body.hasPrefix("> ") ? body.dropFirst(2) : body.dropFirst()
                 for part in lineBreaks(String(content)) {
-                    out.append(indentation + (part.isEmpty ? ">" : "> " + unescape(part)))
+                    out.append(part.isEmpty ? indentation + ">" : appLine(indentation, "> ", part, styler: styler))
                 }
                 continue
             }
             let prefix = blockPrefix(of: body)
             let parts = lineBreaks(String(body.dropFirst(prefix.count)))
-            out.append(indentation + prefix + unescape(parts[0]))
-            out += parts.dropFirst().map { indentation + unescape($0) }
+            out.append(appLine(indentation, prefix, parts[0], styler: styler))
+            let continuation = prefix.isEmpty || prefix.hasPrefix("#") ? indentation : indentation + "\t"
+            out += parts.dropFirst().map { appLine(continuation, "", $0, styler: styler, textOnly: true) }
         }
         return out.joined(separator: "\n")
     }
 
     private static let notionBlockPrefix = makeRegex(#"^(?:#{1,6}[ \t]+|[-*+][ \t]+\[[ xX]\][ \t]+|[-*+][ \t]+|\d{1,9}[.)][ \t]+)"#)
+    private static let bareURLWhole = makeRegex("^" + MarkdownStyler.bareURLPattern + "$")
 
     /// Heading, list and to-do markers, which are never escaped.
     private static func blockPrefix(of line: String) -> String {
@@ -420,49 +456,195 @@ enum NotionMarkdown {
         return (line as NSString).substring(with: m.range)
     }
 
+    /// The line kind Notion meant: from its block prefix.
+    private static func expectedKind(prefix: String) -> MarkdownLine {
+        let trimmed = prefix.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix(">") { return .quote }
+        if trimmed.hasPrefix("#") { return .heading(trimmed.prefix { $0 == "#" }.count) }
+        if trimmed.hasSuffix("]") { return .task }
+        if let first = trimmed.first, first.isNumber { return .ordered }
+        return trimmed.isEmpty ? .text : .bullet
+    }
+
+    /// Rich text of one Notion block, split into what can change (characters, escaped characters)
+    /// and what is copied as is (code spans, equations, links).
+    private enum Piece {
+        case character(Character)
+        case escaped(Character)
+        case verbatim(String)
+        /// Equation source: shown as written, so escaped wherever the app would read it as syntax.
+        case literal(Character)
+    }
+
+    /// One line of the app: `lead` (indentation) + `prefix` (block marker) + the converted `content`.
+    /// Starts with every escape removed, then restores the backslash of each character the app would
+    /// read as syntax, escapes `_` that it would read as emphasis, and — if the line would change
+    /// kind (`\#` becoming a heading) — the escapes at the start. Repeats until nothing changes.
+    private static func appLine(_ lead: String, _ prefix: String, _ content: String, styler: MarkdownStyler,
+                                alwaysEscaped: Set<Character> = [], literal: Bool = false, textOnly: Bool = false) -> String {
+        let pieces = literal ? content.map { Piece.literal($0) } : inlinePieces(content, styler: styler)
+        let expected = expectedKind(prefix: prefix)
+        let head = lead + prefix
+        let base = (head as NSString).length
+        var keep = Set(pieces.indices.filter {   // escaped pieces that keep their backslash
+            if case .escaped(let c) = pieces[$0] { alwaysEscaped.contains(c) } else { false }
+        })
+        var added = Set<Int>()    // "_" pieces that get one
+        for _ in 0..<6 {
+            let (text, offsets) = render(pieces, keep: keep, added: added, base: base)
+            let storage = NSTextStorage(string: head + text)
+            styler.restyle(storage)
+            func isSyntax(_ offset: Int) -> Bool {
+                storage.attribute(.mdMarker, at: offset, effectiveRange: nil) != nil
+                    || storage.attribute(.mdCode, at: offset, effectiveRange: nil) != nil
+            }
+            var changed = false
+            for (index, piece) in pieces.enumerated() {
+                guard let offset = offsets[index], offset < storage.length else { continue }
+                switch piece {
+                case .escaped where !keep.contains(index) && isSyntax(offset):
+                    keep.insert(index)
+                    changed = true
+                case .character("_") where !added.contains(index) && isSyntax(offset),
+                     .literal where !added.contains(index) && isSyntax(offset):
+                    added.insert(index)
+                    changed = true
+                default:
+                    break
+                }
+            }
+            let kind = storage.length > 0
+                ? (storage.attribute(.mdLine, at: 0, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
+                : .text
+            if kind != expected {
+                let restored = changed
+                let unkept = pieces.indices.filter { if case .escaped = pieces[$0] { !keep.contains($0) } else { false } }
+                let early = unkept.filter { (offsets[$0] ?? .max) < base + 6 }
+                keep.formUnion(early.isEmpty ? unkept : early)
+                changed = changed || !unkept.isEmpty
+                // Nothing Notion escaped (text after <br>: "- x", "# x", "1. x", "---"): escape the
+                // first punctuation, as the export's escapingBlockStart does.
+                if textOnly, !restored, unkept.isEmpty, let first = pieces.indices.first(where: {
+                    switch pieces[$0] {
+                    case .character(let c), .literal(let c): isASCIIPunctuation(c) && !added.contains($0)
+                    default: false
+                    }
+                }) {
+                    added.insert(first)
+                    changed = true
+                }
+            }
+            if !changed { return head + text }
+        }
+        let all = Set(pieces.indices)
+        return head + render(pieces, keep: all, added: added, base: base).text
+    }
+
+    private static func render(_ pieces: [Piece], keep: Set<Int>, added: Set<Int>, base: Int) -> (text: String, offsets: [Int: Int]) {
+        var text = ""
+        var offsets: [Int: Int] = [:]
+        var length = base
+        for (index, piece) in pieces.enumerated() {
+            let string: String
+            switch piece {
+            case .character(let c), .literal(let c):
+                string = added.contains(index) ? "\\" + String(c) : String(c)
+            case .escaped(let c):
+                string = keep.contains(index) ? "\\" + String(c) : String(c)
+            case .verbatim(let s):
+                string = s
+            }
+            if case .verbatim = piece {} else { offsets[index] = length + (string.utf16.count - String(string.last!).utf16.count) }
+            text += string
+            length += string.utf16.count
+        }
+        return (text, offsets)
+    }
+
+    private static func inlinePieces(_ content: String, styler: MarkdownStyler) -> [Piece] {
+        let chars = Array(content)
+        var pieces: [Piece] = []
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\", i + 1 < chars.count, isASCIIPunctuation(chars[i + 1]) {
+                pieces.append(.escaped(chars[i + 1]))
+                i += 2
+            } else if c == "`" {
+                let run = chars[i...].prefix { $0 == "`" }.count
+                if let close = closingBackticks(chars, from: i + run, length: run) {
+                    pieces.append(.verbatim(String(chars[i..<(close + run)])))
+                    i = close + run
+                } else {
+                    pieces += Array(repeating: .character("`"), count: run)
+                    i += run
+                }
+            } else if c == "$", let close = closingDollar(chars, from: i + 1) {
+                pieces += chars[i...close].map { .literal($0) } // an equation: not Markdown
+                i = close + 1
+            } else if c == "[", let link = link(chars, at: i) {
+                let url = link.url.replacingOccurrences(of: "(", with: "%28").replacingOccurrences(of: ")", with: "%29")
+                let range = NSRange(location: 0, length: (url as NSString).length)
+                let isBare = unescapeAll(link.label) == link.url && bareURLWhole.firstMatch(in: url, range: range) != nil
+                // The label is rich text too; its brackets must stay escaped or the link would break.
+                let label = appLine("", "", link.label, styler: styler, alwaysEscaped: ["[", "]"])
+                pieces.append(.verbatim(isBare ? url : "[" + label + "](" + url + ")"))
+                i = link.end
+            } else {
+                pieces.append(.character(c))
+                i += 1
+            }
+        }
+        return pieces
+    }
+
+    private static func isASCIIPunctuation(_ c: Character) -> Bool {
+        c.isASCII && (c.isPunctuation || c.isSymbol)
+    }
+
+    private static func unescapeAll(_ text: String) -> String {
+        var out = ""
+        var escaping = false
+        for c in text {
+            if !escaping, c == "\\" { escaping = true; continue }
+            if escaping, !isASCIIPunctuation(c) { out.append("\\") }
+            escaping = false
+            out.append(c)
+        }
+        return out
+    }
+
     private static func fenceRun(_ line: String) -> (character: Character, length: Int)? {
         guard let first = line.first, first == "`" || first == "~" else { return nil }
         let length = line.prefix { $0 == first }.count
         return length >= 3 ? (first, length) : nil
     }
 
+    /// Splits at `<br>` (and `<br/>`, `<br />`), but not inside inline code.
     private static func lineBreaks(_ text: String) -> [String] {
-        text.replacingOccurrences(of: "<br />", with: "<br>")
-            .replacingOccurrences(of: "<br/>", with: "<br>")
-            .components(separatedBy: "<br>")
-    }
-
-    /// Removes backslash escapes (before any ASCII punctuation, as in CommonMark: the export also
-    /// escapes block syntax such as `\#`), except inside code spans and link URLs.
-    private static func unescape(_ text: String) -> String {
         let chars = Array(text)
-        var out = ""
+        var parts = [""]
         var i = 0
         while i < chars.count {
-            let c = chars[i]
-            if c == "\\", i + 1 < chars.count, chars[i + 1].isASCII, chars[i + 1].isPunctuation || chars[i + 1].isSymbol {
-                out.append(chars[i + 1])
-                i += 2
-            } else if c == "`" {
+            if chars[i] == "`" {
                 let run = chars[i...].prefix { $0 == "`" }.count
-                if let close = closingBackticks(chars, from: i + run, length: run) {
-                    out += String(chars[i..<(close + run)])
-                    i = close + run
-                } else {
-                    out += String(repeating: "`", count: run)
-                    i += run
-                }
-            } else if c == "[", let link = link(chars, at: i) {
-                let label = unescape(link.label)
-                let isBare = label == link.url && (link.url.hasPrefix("https://") || link.url.hasPrefix("http://"))
-                out += isBare ? link.url : "[" + label + "](" + link.url + ")"
-                i = link.end
-            } else {
-                out.append(c)
-                i += 1
+                let end = closingBackticks(chars, from: i + run, length: run).map { $0 + run } ?? i + run
+                parts[parts.count - 1] += String(chars[i..<end])
+                i = end
+                continue
             }
+            if chars[i] == "<" {
+                let rest = String(chars[i..<min(i + 6, chars.count)])
+                if let tag = ["<br />", "<br/>", "<br>"].first(where: { rest.hasPrefix($0) }) {
+                    parts.append("")
+                    i += tag.count
+                    continue
+                }
+            }
+            parts[parts.count - 1].append(chars[i])
+            i += 1
         }
-        return out
+        return parts
     }
 
     private static func closingBackticks(_ chars: [Character], from start: Int, length: Int) -> Int? {
@@ -476,7 +658,20 @@ enum NotionMarkdown {
         return nil
     }
 
-    /// `[label](url)` starting at `start`: the raw (still escaped) label, the URL and the index after ")".
+    /// The closing "$" of an inline equation that starts at `start - 1` (not "$$", not escaped).
+    private static func closingDollar(_ chars: [Character], from start: Int) -> Int? {
+        guard start < chars.count, chars[start] != "$", !chars[start].isWhitespace else { return nil }
+        var i = start
+        while i < chars.count {
+            if chars[i] == "\\" { i += 2; continue }
+            if chars[i] == "$" { return chars[i - 1].isWhitespace ? nil : i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// `[label](url)` starting at `start`: the raw (still escaped) label, the URL and the index after
+    /// ")". The URL may contain balanced parentheses, as Wikipedia links do.
     private static func link(_ chars: [Character], at start: Int) -> (label: String, url: String, end: Int)? {
         var i = start + 1
         while i < chars.count, chars[i] != "]" {
@@ -485,8 +680,14 @@ enum NotionMarkdown {
         guard i + 1 < chars.count, chars[i] == "]", chars[i + 1] == "(" else { return nil }
         let label = String(chars[(start + 1)..<i])
         var j = i + 2
-        while j < chars.count, chars[j] != ")" {
-            if chars[j] == "(" || chars[j].isWhitespace { return nil }
+        var depth = 0
+        while j < chars.count {
+            let c = chars[j]
+            if c.isWhitespace { return nil }
+            if c == "(" { depth += 1 } else if c == ")" {
+                if depth == 0 { break }
+                depth -= 1
+            }
             j += 1
         }
         guard j < chars.count, j > i + 2 else { return nil }
