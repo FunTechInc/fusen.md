@@ -81,6 +81,49 @@ final class MarkdownTextView: NSTextView {
         concealsMarkdown ? step(forward: false, extend: true) : super.moveBackwardAndModifySelection(sender)
     }
 
+    override func moveUp(_ sender: Any?) {
+        moveUpSkippingSyntax(extend: false) { super.moveUp(sender) }
+    }
+
+    override func moveUpAndModifySelection(_ sender: Any?) {
+        moveUpSkippingSyntax(extend: true) { super.moveUpAndModifySelection(sender) }
+    }
+
+    private func moveUpSkippingSyntax(extend: Bool, _ move: () -> Void) {
+        let selection = selectedRange()
+        guard concealedEditing, (extend || selection.length == 0), isAtBlockStart(extending: extend),
+              let storage = textStorage, let layoutManager, let textContainer else { return move() }
+        let moving = extend && selection.length > 0 ? (movingEnd ?? selection.location) : selection.location
+        let anchor = moving == selection.location ? NSMaxRange(selection) : selection.location
+        let line = ConcealedEditing.line(at: moving, in: storage)
+        move()
+        let after = selectedRange()
+        let afterMoving = extend && after.length > 0 ? (movingEnd ?? after.location) : after.location
+        let afterAnchor = afterMoving == after.location ? NSMaxRange(after) : after.location
+        guard (extend ? afterAnchor == anchor : after.length == 0),
+              ConcealedEditing.onlySyntax(between: moving, and: afterMoving, in: storage),
+              line.range.location > 0, moving < storage.length else { return }
+
+        // TextKit can put a heading's null prefix glyphs on the preceding line fragment. Up then
+        // targets that prefix, and the selection delegate snaps it back to the heading's text.
+        // If the native move stalled, hit-test the actual line above at the visible caret's x.
+        layoutManager.ensureLayout(for: textContainer)
+        let glyph = layoutManager.glyphIndexForCharacter(at: moving)
+        let current = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let x = current.minX + layoutManager.location(forGlyphAt: glyph).x
+        let above = ConcealedEditing.line(at: line.range.location - 1, in: storage)
+        let aboveGlyph = layoutManager.glyphIndexForCharacter(at: above.contentsEnd)
+        var aboveGlyphs = NSRange()
+        let aboveRect = layoutManager.lineFragmentRect(forGlyphAt: aboveGlyph, effectiveRange: &aboveGlyphs)
+        let aboveCharacters = layoutManager.characterRange(forGlyphRange: aboveGlyphs, actualGlyphRange: nil)
+        let point = NSPoint(x: x + textContainerOrigin.x, y: aboveRect.midY + textContainerOrigin.y)
+        // The hit can itself resolve to the null prefix attached to that fragment; stay above it.
+        let target = max(aboveCharacters.location, min(characterIndexForInsertion(at: point), above.contentsEnd))
+        let fixedEnd = extend ? anchor : target
+        setSelectedRange(NSRange(location: min(fixedEnd, target), length: abs(target - fixedEnd)))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
     // ⌥← ⌥→: NSTextView's word moves, repeated while they only cross hidden syntax (a link's URL) and
     // spaces, so that every press moves the caret over a word on screen. At the start of a block's text NSTextView would stop in the
     // hidden marker, where the caret may not stay, so ⌥← (and ⌥⇧↑) move like ← instead (to the line above).
