@@ -82,46 +82,145 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func moveUp(_ sender: Any?) {
-        moveUpSkippingSyntax(extend: false) { super.moveUp(sender) }
+        moveVertically(down: false, extend: false) { super.moveUp(sender) }
     }
 
     override func moveUpAndModifySelection(_ sender: Any?) {
-        moveUpSkippingSyntax(extend: true) { super.moveUpAndModifySelection(sender) }
+        moveVertically(down: false, extend: true) { super.moveUpAndModifySelection(sender) }
     }
 
-    private func moveUpSkippingSyntax(extend: Bool, _ move: () -> Void) {
+    override func moveDown(_ sender: Any?) {
+        moveVertically(down: true, extend: false) { super.moveDown(sender) }
+    }
+
+    override func moveDownAndModifySelection(_ sender: Any?) {
+        moveVertically(down: true, extend: true) { super.moveDownAndModifySelection(sender) }
+    }
+
+    private struct CaretLine {
+        let rect: NSRect
+        let glyphs: NSRange
+        /// Valid insertion positions, excluding the newline and null glyphs of the next block.
+        let start: Int
+        let end: Int
+        let reference: Int?
+    }
+
+    /// After correcting a native move, retain its original column across short/empty rows.
+    /// Any non-vertical selection change (click, horizontal arrow, editing) starts a new column.
+    private var verticalMotion: (x: CGFloat, corrected: Bool)?
+    private var isMovingVertically = false
+
+    private func moveVertically(down: Bool, extend: Bool, _ move: () -> Void) {
         let selection = selectedRange()
-        guard concealedEditing, (extend || selection.length == 0), isAtBlockStart(extending: extend),
+        guard concealedEditing, (extend || selection.length == 0),
               let storage = textStorage, let layoutManager, let textContainer else { return move() }
+        layoutManager.ensureLayout(for: textContainer)
         let moving = extend && selection.length > 0 ? (movingEnd ?? selection.location) : selection.location
         let anchor = moving == selection.location ? NSMaxRange(selection) : selection.location
-        let line = ConcealedEditing.line(at: moving, in: storage)
+        let current = caretLine(at: moving, affinity: selectionAffinity, in: storage, layoutManager)
+        let x = verticalMotion?.x ?? caretX(at: moving, on: current, in: storage, layoutManager, textContainer)
+        verticalMotion = (x, verticalMotion?.corrected ?? false)
+        isMovingVertically = true
+        defer { isMovingVertically = false }
+        let nextGlyph = down ? NSMaxRange(current.glyphs) : current.glyphs.location - 1
+        let destination: CaretLine
+        if nextGlyph >= 0, nextGlyph < layoutManager.numberOfGlyphs {
+            destination = caretLine(forGlyph: nextGlyph, in: storage, layoutManager)
+        } else if down, current.reference != nil, layoutManager.extraLineFragmentTextContainer != nil {
+            destination = emptyCaretLine(in: storage, layoutManager)
+        } else {
+            return move()
+        }
         move()
         let after = selectedRange()
         let afterMoving = extend && after.length > 0 ? (movingEnd ?? after.location) : after.location
         let afterAnchor = afterMoving == after.location ? NSMaxRange(after) : after.location
-        guard (extend ? afterAnchor == anchor : after.length == 0),
-              ConcealedEditing.onlySyntax(between: moving, and: afterMoving, in: storage),
-              line.range.location > 0, moving < storage.length else { return }
+        // The selection delegate collapses a selection containing only an opening delimiter.
+        // It is still the same visible anchor, so the correction must restore the original one.
+        let collapsedSyntax = selection.length == 0 && after.length == 0
+            && (min(anchor, afterAnchor)..<max(anchor, afterAnchor)).allSatisfy { isNullCharacter($0, in: storage) }
+        guard extend ? (afterAnchor == anchor || collapsedSyntax) : after.length == 0 else { return }
+        let actual = caretLine(at: afterMoving, affinity: selectionAffinity, in: storage, layoutManager)
+        let reachedRow = afterMoving >= destination.start && afterMoving <= destination.end && actual.rect == destination.rect
+        guard !reachedRow || verticalMotion?.corrected == true else { return }
+        verticalMotion = (x, true)
 
-        // TextKit can put a heading's null prefix glyphs on the preceding line fragment. Up then
-        // targets that prefix, and the selection delegate snaps it back to the heading's text.
-        // If the native move stalled, hit-test the actual line above at the visible caret's x.
-        layoutManager.ensureLayout(for: textContainer)
-        let glyph = layoutManager.glyphIndexForCharacter(at: moving)
-        let current = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let x = current.minX + layoutManager.location(forGlyphAt: glyph).x
-        let above = ConcealedEditing.line(at: line.range.location - 1, in: storage)
-        let aboveGlyph = layoutManager.glyphIndexForCharacter(at: above.contentsEnd)
-        var aboveGlyphs = NSRange()
-        let aboveRect = layoutManager.lineFragmentRect(forGlyphAt: aboveGlyph, effectiveRange: &aboveGlyphs)
-        let aboveCharacters = layoutManager.characterRange(forGlyphRange: aboveGlyphs, actualGlyphRange: nil)
-        let point = NSPoint(x: x + textContainerOrigin.x, y: aboveRect.midY + textContainerOrigin.y)
-        // The hit can itself resolve to the null prefix attached to that fragment; stay above it.
-        let target = max(aboveCharacters.location, min(characterIndexForInsertion(at: point), above.contentsEnd))
+        // Null glyphs can belong to another fragment. Native movement may stall inside a hidden
+        // marker, or skip a line entirely. Correct only those moves using the adjacent visual row;
+        // a divider remains a visible object and needs no special "only syntax" exception.
+        let point = NSPoint(x: x + textContainerOrigin.x, y: destination.rect.midY + textContainerOrigin.y)
+        let target = max(destination.start, min(characterIndexForInsertion(at: point), destination.end))
         let fixedEnd = extend ? anchor : target
-        setSelectedRange(NSRange(location: min(fixedEnd, target), length: abs(target - fixedEnd)))
+        setSelectedRange(NSRange(location: min(fixedEnd, target), length: abs(target - fixedEnd)),
+                         affinity: down ? .downstream : .upstream, stillSelecting: false)
         scrollRangeToVisible(NSRange(location: target, length: 0))
+    }
+
+    private func isNullCharacter(_ index: Int, in storage: NSTextStorage) -> Bool {
+        index >= 0 && index < storage.length
+            && storage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil
+            && storage.attribute(.mdConcealBox, at: index, effectiveRange: nil) == nil
+    }
+
+    private func caretLine(forGlyph glyph: Int, in storage: NSTextStorage, _ layout: NSLayoutManager) -> CaretLine {
+        var glyphs = NSRange()
+        let rect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &glyphs)
+        let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        var end = NSMaxRange(characters)
+        while end > characters.location, isNullCharacter(end - 1, in: storage) { end -= 1 }
+        if end > characters.location {
+            end = min(end, ConcealedEditing.line(at: end - 1, in: storage).contentsEnd)
+        }
+        return CaretLine(rect: rect, glyphs: glyphs, start: characters.location, end: end,
+                         reference: layout.characterIndexForGlyph(at: glyph))
+    }
+
+    private func emptyCaretLine(in storage: NSTextStorage, _ layout: NSLayoutManager) -> CaretLine {
+        CaretLine(rect: layout.extraLineFragmentRect, glyphs: NSRange(location: layout.numberOfGlyphs, length: 0),
+                  start: storage.length, end: storage.length, reference: nil)
+    }
+
+    private func caretLine(at position: Int, affinity: NSSelectionAffinity,
+                           in storage: NSTextStorage, _ layout: NSLayoutManager) -> CaretLine {
+        let paragraph = ConcealedEditing.line(at: position, in: storage)
+        var visible = position
+        while visible < paragraph.contentsEnd, isNullCharacter(visible, in: storage) { visible += 1 }
+        if visible == storage.length {
+            visible -= 1
+            while visible >= paragraph.range.location, isNullCharacter(visible, in: storage) { visible -= 1 }
+            guard visible >= paragraph.range.location else { return emptyCaretLine(in: storage, layout) }
+        }
+        let glyph = layout.glyphIndexForCharacter(at: visible)
+        let line = caretLine(forGlyph: glyph, in: storage, layout)
+        // At a soft wrap, upstream affinity belongs to the end of the preceding visual row.
+        // A hidden paragraph prefix is always part of its own row instead.
+        if affinity == .upstream, position == line.start, line.glyphs.location > 0,
+           position > ConcealedEditing.visibleContentStart(of: paragraph, in: storage) {
+            return caretLine(forGlyph: line.glyphs.location - 1, in: storage, layout)
+        }
+        return line
+    }
+
+    private func caretX(at position: Int, on line: CaretLine, in storage: NSTextStorage,
+                        _ layout: NSLayoutManager, _ container: NSTextContainer) -> CGFloat {
+        guard let reference = line.reference else {
+            let paragraph = ConcealedEditing.line(at: position, in: storage)
+            let style = paragraph.range.location < storage.length
+                ? storage.attribute(.paragraphStyle, at: paragraph.range.location, effectiveRange: nil) as? NSParagraphStyle : nil
+            return container.lineFragmentPadding + (style?.headIndent ?? 0)
+        }
+        let count = layout.getLineFragmentInsertionPoints(forCharacterAt: reference, alternatePositions: false,
+                                                          inDisplayOrder: false, positions: nil, characterIndexes: nil)
+        var positions = [CGFloat](repeating: 0, count: count)
+        var indices = [Int](repeating: 0, count: count)
+        layout.getLineFragmentInsertionPoints(forCharacterAt: reference, alternatePositions: false,
+                                              inDisplayOrder: false, positions: &positions, characterIndexes: &indices)
+        let match = indices.indices.first { indices[$0] == position }
+            ?? indices.indices.first { i in
+                (min(position, indices[i])..<max(position, indices[i])).allSatisfy { isNullCharacter($0, in: storage) }
+            }
+        return line.rect.minX + (match.map { positions[$0] } ?? container.lineFragmentPadding)
     }
 
     // ⌥← ⌥→: NSTextView's word moves, repeated while they only cross hidden syntax (a link's URL) and
@@ -199,6 +298,7 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        if !isMovingVertically { verticalMotion = nil }
         let old = selectedRange()
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
         let new = selectedRange()
