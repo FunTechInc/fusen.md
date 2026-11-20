@@ -19,11 +19,23 @@ struct MarkdownSettingsView: View {
                 row("-␣", Text("•  箇条書き"), note: "*␣ や +␣ でも")
                 row("1.␣", Text("1.  番号付きリスト"))
                 row("[]", Label("チェックボックス", systemImage: "square"), note: "-␣[␣]␣ でも。クリックでチェック")
+                row("[>]", signal(.waiting, "待機のタスク"), note: "-␣[>]␣ でも。次にやるもの")
+                row("[/]", signal(.doing, "進行中のタスク"), note: "-␣[/]␣ でも。輪が回る")
                 row(">␣", Text("引用").padding(.leading, 10)
                     .overlay(alignment: .leading) { Rectangle().fill(Color.primary).frame(width: 3) })
                 row("---", Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 120, height: 1),
                     note: "区切り線。「書式」メニューからも")
                 row("```", Text("コードブロック").font(.body.monospaced()), note: "次の ``` の行までがコード")
+                row("/", Text("見出し・リスト・カード・信号などを選ぶメニュー"), note: "スペースの後でも。日本語入力では ；")
+            }
+
+            Section("カード") {
+                Text("カードは、色と名前の付いた枠です。「書式 > カードを挿入」か / メニューで作り、中には普通の Markdown を書きます。")
+                    .fixedSize(horizontal: false, vertical: true)
+                row(":::card␣色␣名前", Text("カードの始まり"), note: ":::  の行までがカード")
+                row("ドラッグ", Text("並べ替え。別のカードの左右の端に落とすと横に並ぶ"), note: "名前のタグや余白をつかむ。Esc で中止")
+                row("•••", Text("色を変える・カードを解除・削除"), note: "余白の右クリックでも")
+                row("Return", Text("名前から中身へ。中身の最後の空行で押すとカードの下へ"))
             }
 
             Section("文中で") {
@@ -43,6 +55,14 @@ struct MarkdownSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section("タスクの状態") {
+                Text("タスクには、未着手・待機・進行中・完了の 4 つの状態があります。チェックボックスや信号をクリックすると、一歩進みます。")
+                    .fixedSize(horizontal: false, vertical: true)
+                row("クリック", Text("待機 → 進行中 → 完了。未着手はそのまま完了に"), note: "⌘Return")
+                row("⌥クリック", Text("待機にする。待機のタスクは未着手に戻す"), note: "⌥⌘Return")
+                row("右クリック", Text("4 つの状態から選ぶ"), note: "「書式 > タスクの状態」でも")
+            }
+
             Section("編集") {
                 row("Return", Text("リストやチェックボックスの次の項目。空の項目で押すと終わり"))
                 row("Tab・⇧Tab", Text("リストを一段深く・浅く"))
@@ -50,6 +70,11 @@ struct MarkdownSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// A signal as the notes draw it, with its name.
+    private func signal(_ state: TaskState, _ title: String) -> some View {
+        Label { Text(title) } icon: { Image(nsImage: TaskSignalIcon.image(state, theme: MarkdownTheme(), ink: .labelColor)) }
     }
 
     /// Slanted as the notes show italic text: Japanese fonts have no italic face.

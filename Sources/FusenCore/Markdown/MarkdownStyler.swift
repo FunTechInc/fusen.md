@@ -1,8 +1,9 @@
 import AppKit
 
 extension NSAttributedString.Key {
-    /// Value: Int — UTF-16 offset of the character between "[" and "]" of a task checkbox. Set on the
-    /// whole task prefix ("- [ ]"), which is also the click target for toggling.
+    /// Value: Int — UTF-16 offset of the character between "[" and "]" of a task checkbox (its state,
+    /// see `TaskState`). Set on the whole task prefix ("- [ ]"), which is also the click target for
+    /// changing the state.
     static let mdTaskToggle = NSAttributedString.Key("MDTaskToggle")
     /// Value: URL — target of a Markdown link or bare URL (opened with ⌘-click).
     static let mdLink = NSAttributedString.Key("MDLink")
@@ -38,6 +39,23 @@ extension NSAttributedString.Key {
     /// Value: true — a character made literal by a backslash escape ("\\*" shows "*"). The backslash
     /// itself is `.mdMarker`. Exported verbatim, never matched as syntax.
     static let mdEscaped = NSAttributedString.Key("MDEscaped")
+    /// Value: CGFloat — 強調表示: on a paragraph that is dimmed, how much of its look is left (its text
+    /// colors are faded already; the layout manager fades what it draws for the paragraph by the same).
+    static let mdFade = NSAttributedString.Key("MDFade")
+    /// Value: NSColor — 強調表示: on a paragraph shown on the darkened paper, the color that replaces the
+    /// text color in what the layout manager draws for it (bullets, numbers, quote bars).
+    static let mdInk = NSAttributedString.Key("MDInk")
+    /// Value: Int — on every character of a card (its opening line through its closing line), the
+    /// card's number in the note. Two cards never share one, so each card is one run.
+    static let mdCard = NSAttributedString.Key("MDCard")
+    /// Value: String (`CardColor` raw value) — on the same characters, the card's color.
+    static let mdCardColor = NSAttributedString.Key("MDCardColor")
+    /// Value: true — 強調表示: on the characters of a card that holds no emphasized to-do. It is drawn
+    /// darkened, like the paper.
+    static let mdCardShade = NSAttributedString.Key("MDCardShade")
+    /// Value: Int — on every character of a row of cards ("::::columns" through "::::"), the row's
+    /// number in the note.
+    static let mdCardRow = NSAttributedString.Key("MDCardRow")
 }
 
 /// Inline span kinds (see `.mdSpanKind`).
@@ -45,9 +63,17 @@ enum MarkdownSpan: String, Sendable {
     case bold, italic, boldItalic, strike, code, link
 }
 
-/// Line kinds, matching the block types of Notion-flavored Markdown.
+/// Line kinds, matching the block types of Notion-flavored Markdown; and the two lines around a card
+/// (":::card orange 名前" and ":::", see CardSyntax), whose lines between keep their own kinds, and
+/// around a row of cards ("::::columns" and "::::").
 enum MarkdownLine: String, Sendable {
     case text, h1, h2, h3, h4, bullet, ordered, task, quote, fence, code, rule
+    case cardOpen, cardClose, rowOpen, rowClose
+
+    /// A line around a card or a row of cards: structure, not a block of the note's text.
+    var isCardStructure: Bool { self == .cardOpen || self == .cardClose || self == .rowOpen || self == .rowClose }
+    /// A line that shows nothing at all when the Markdown is concealed (a card's opening line shows its title).
+    var isHiddenLine: Bool { self == .cardClose || self == .rowOpen || self == .rowClose }
 
     static func heading(_ level: Int) -> MarkdownLine {
         [.h1, .h2, .h3, .h4][min(max(level, 1), 4) - 1]
@@ -89,6 +115,70 @@ struct MarkdownTheme {
     var dividerColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.16)
     /// Notion's checked checkbox fill.
     var checkboxFill = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
+    /// The marks of the signals (see TaskSignalIcon). The arc of a to-do in progress has the blue of the
+    /// checked checkbox — what is being done and what is done are one color, as Notion's "In progress"
+    /// is blue too — and the pause mark of one that waits has Notion's orange, which holds its own on
+    /// every paper color.
+    var doingColor = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
+    var waitingColor = NSColor(srgbRed: 217 / 255, green: 115 / 255, blue: 13 / 255, alpha: 1)
+    /// 強調表示 (the Figma): the paper under 67 % black, the emphasized to-dos in white, everything else
+    /// at 31 %; the button of the emphasis that is off at 29 %.
+    var focusShade: CGFloat = 0.67
+    var focusInk = NSColor.white
+    var focusFade: CGFloat = 0.31
+    var focusButtonFade: CGFloat = 0.29
+
+    // Cards: a rounded rectangle in the card's color, with the title in a tag and "•••" at its top and
+    // the card's text right under them, on the card's color (no panel of its own), close to its edges.
+    /// Space above and below a card.
+    var cardGap: CGFloat = 5
+    /// From the card's edges to the tag and the text: above the tag, left and right, below the last line.
+    var cardPaddingTop: CGFloat = 7
+    var cardPadding: CGFloat = 8
+    var cardPaddingBottom: CGFloat = 5
+    /// Between the title's tag and the first line of text.
+    var cardTagGap: CGFloat = 3
+    /// Left and right of the title in its tag.
+    var cardTagPadding: CGFloat = 7
+    var cardRadius: CGFloat = 8
+    var cardTagRadius: CGFloat = 3
+    /// The three dots of "•••": their size, the distance between their centres, and how far the last one
+    /// is from the card's right edge.
+    var cardDotSize: CGFloat = 2.5
+    var cardDotSpacing: CGFloat = 7
+    var cardDotsInset: CGFloat = 11
+    /// The tag is as tall as a line of text, and the title is written in the text's size (the Figma: an
+    /// 18px tag and 12px medium for 12px text).
+    var cardTagHeight: CGFloat { (fontSize * 1.5).rounded() }
+    var cardTitleFont: NSFont { .systemFont(ofSize: fontSize, weight: .medium) }
+    /// How far the title is raised so that its capitals sit in the middle of the tag: a line taller than
+    /// its font has the extra space above the text, which leaves the text low in it.
+    var cardTitleRise: CGFloat {
+        let font = cardTitleFont
+        let baseline = (cardTagHeight + font.descender).rounded(.up)
+        return baseline - font.capHeight / 2 - cardTagHeight / 2
+    }
+    var cardDotsWidth: CGFloat { 2 * cardDotSpacing + cardDotSize }
+    /// How far a card's text is from the card's edges, left and right: it starts under the tag's edge.
+    var cardContentInset: CGFloat { cardPadding }
+    /// Shown in the tag of a card without a title.
+    var cardTitlePlaceholder = "タイトル"
+    /// Between two cards that stand side by side.
+    var cardRowGap: CGFloat = 10
+    /// Cards stand side by side only while each is at least this wide; in a narrower note the cards of a
+    /// row are shown one below the other (the note's text stays as it is).
+    var cardMinimumWidth: CGFloat = 110
+
+    /// The paper of a note while 強調表示 is on: under black, as the Figma composites it (in sRGB;
+    /// NSColor's own blending works in another space and comes out lighter).
+    func focusPaper(_ paper: NSColor) -> NSColor { shaded(paper) }
+
+    func shaded(_ color: NSColor) -> NSColor {
+        guard let c = color.usingColorSpace(.sRGB) else { return color }
+        let keep = 1 - focusShade
+        return NSColor(srgbRed: c.redComponent * keep, green: c.greenComponent * keep, blue: c.blueComponent * keep,
+                       alpha: c.alphaComponent)
+    }
     /// Notion: h1 1.875em, h2 1.5em, h3 1.25em, h4 1.15em, weight 600, line height 1.3.
     var headingScale: [CGFloat] = [1.875, 1.5, 1.25, 1.15]
     /// Notion's quote: 1.2em text after a 3px bar and 0.9em of space.
@@ -124,6 +214,13 @@ final class MarkdownStyler {
     private let codeParagraph: NSParagraphStyle
     /// Dividers: a thin block, like Notion's.
     private let ruleParagraph: NSParagraphStyle
+    /// A card's opening line: the top of the card, the title in its tag, and the space down to the first
+    /// line of text. Its closing line: the space from the last line of text to under the card.
+    private let cardOpenParagraph: NSParagraphStyle
+    private let cardCloseParagraph: NSParagraphStyle
+    /// The lines around a row of cards: small (and of no height at all when the Markdown is concealed,
+    /// which is the layout manager's doing).
+    private let rowLineParagraph: NSParagraphStyle
 
     // Block level (matched against one line; ^ and $ bind to the search range).
     private let fenceOpen = makeRegex(#"^[ \t]*(`{3,}|~{3,})"#)
@@ -136,7 +233,7 @@ final class MarkdownStyler {
     private let quote = makeRegex(#"^ {0,3}(?:>[ \t]+)+"#)
     /// A bare ">" continues a quote begun on the line above (an empty line inside the quote).
     private let quoteContinuation = makeRegex(#"^ {0,3}>[ \t]*$"#)
-    private let task = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])[ \t]+"#)
+    private let task = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(\["# + TaskState.characterClass + #"\])[ \t]+"#)
     private let listItem = makeRegex(#"^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+"#)
 
     // Inline. Emphasis patterns expose groups 1 = opening delimiter, 2 = content, 3 = closing.
@@ -180,17 +277,49 @@ final class MarkdownStyler {
         rule.paragraphSpacing = 4
         rule.paragraphSpacingBefore = 2
         ruleParagraph = rule
+        let cardOpen = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        cardOpen.minimumLineHeight = theme.cardTagHeight
+        cardOpen.maximumLineHeight = theme.cardTagHeight
+        cardOpen.paragraphSpacingBefore = theme.cardGap + theme.cardPaddingTop
+        cardOpen.paragraphSpacing = theme.cardTagGap
+        cardOpen.firstLineHeadIndent = theme.cardPadding + theme.cardTagPadding
+        cardOpen.headIndent = cardOpen.firstLineHeadIndent
+        // The title ends before "•••".
+        cardOpen.tailIndent = -(theme.cardDotsInset + theme.cardDotsWidth + theme.cardTagPadding + 6)
+        cardOpenParagraph = cardOpen
+        let cardClose = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        cardClose.minimumLineHeight = theme.cardPaddingBottom + theme.cardGap
+        cardClose.maximumLineHeight = cardClose.minimumLineHeight
+        cardClose.paragraphSpacing = 0
+        cardClose.firstLineHeadIndent = theme.cardContentInset // where ":::" stands when the Markdown is shown
+        cardCloseParagraph = cardClose
+        let rowLine = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        rowLine.minimumLineHeight = theme.fontSize.rounded()
+        rowLine.maximumLineHeight = rowLine.minimumLineHeight
+        rowLine.paragraphSpacing = 0
+        rowLineParagraph = rowLine
         baseAttributes = [.font: theme.bodyFont, .foregroundColor: theme.textColor, .paragraphStyle: paragraph,
                           .mdLine: MarkdownLine.text.rawValue]
     }
 
     /// Restyles the whole storage. Sticky notes are small, so a full pass per keystroke is cheap.
-    func restyle(_ storage: NSTextStorage) {
+    /// With `focus` (強調表示), only the to-dos in that state keep their look; see `applyFocus`.
+    /// `width` is how wide the text is laid out, if that is known: in a note too narrow for a row of
+    /// cards, the row's cards are shown one below the other.
+    func restyle(_ storage: NSTextStorage, focus: NoteFocus? = nil, width: CGFloat? = nil) {
         let text = storage.string
         let ns = text as NSString
         storage.beginEditing()
         defer { storage.endEditing() }
+        defer { if let focus { applyFocus(focus, storage, ns) } }
         storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: ns.length))
+
+        // The cards first: which lines open and close one is known before the lines are styled.
+        var scanned: Fence?
+        let blocks = CardSyntax.blocks(in: ns) { isFenced($0, text, ns, &scanned) }
+        let cards = blocks.cards
+        var card = 0 // the card the pass is in, or comes to next
+        var row = 0  // and the row of cards
 
         var fence: Fence?
         var previous = MarkdownLine.text
@@ -199,13 +328,210 @@ final class MarkdownStyler {
             var start = 0, end = 0, contentsEnd = 0
             ns.getLineStart(&start, end: &end, contentsEnd: &contentsEnd,
                             for: NSRange(location: location, length: 0))
-            styleLine(NSRange(location: start, length: contentsEnd - start),
-                      paragraph: NSRange(location: start, length: end - start),
-                      storage: storage, text: text, fence: &fence, previous: previous)
+            let paragraph = NSRange(location: start, length: end - start)
+            if row < blocks.rows.count, start == blocks.rows[row].open.location {
+                styleRowLine(.rowOpen, paragraph, storage, ns)
+            } else if row < blocks.rows.count, start == blocks.rows[row].close.location {
+                styleRowLine(.rowClose, paragraph, storage, ns)
+                storage.addAttribute(.mdCardRow, value: row, range: blocks.rows[row].range)
+                putSideBySide(blocks.rows[row], cards, storage, ns, width: width)
+                row += 1
+            } else if card < cards.count, start == cards[card].open.location {
+                styleCardOpen(cards[card], storage)
+            } else if card < cards.count, start == cards[card].close.location {
+                styleCardClose(cards[card], number: card, storage)
+                card += 1
+            } else {
+                styleLine(NSRange(location: start, length: contentsEnd - start), paragraph: paragraph,
+                          storage: storage, text: text, fence: &fence, previous: previous)
+                if card < cards.count, start > cards[card].open.location {
+                    inset(paragraph, by: theme.cardContentInset, storage) // a line of the card's text
+                }
+            }
             previous = (storage.attribute(.mdLine, at: start, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
             location = end
         }
         fixBrackets(in: NSRange(location: 0, length: ns.length), storage, ns)
+    }
+
+    // MARK: Cards
+
+    /// The opening line: its syntax is hidden, and what follows is the title, shown in the tag.
+    private func styleCardOpen(_ card: CardSyntax.Card, _ s: NSTextStorage) {
+        s.addAttribute(.mdLine, value: MarkdownLine.cardOpen.rawValue, range: card.open)
+        dim(card.prefix, s)
+        s.addAttribute(.mdBlockPrefix, value: true, range: card.prefix)
+        concealAsLineStart(card.prefix, s)
+        s.addAttributes([.font: theme.cardTitleFont, .foregroundColor: card.color.tagText,
+                         .baselineOffset: theme.cardTitleRise], range: card.title)
+        s.addAttribute(.paragraphStyle, value: cardOpenParagraph, range: card.open)
+    }
+
+    /// The closing line: all syntax, a thin strip under the card's text. Now that the card is whole, its
+    /// characters are marked as its own.
+    private func styleCardClose(_ card: CardSyntax.Card, number: Int, _ s: NSTextStorage) {
+        let ns = s.string as NSString
+        var end = NSMaxRange(card.close)
+        while end > card.close.location, ns.character(at: end - 1) == 0x0A || ns.character(at: end - 1) == 0x0D { end -= 1 }
+        let line = NSRange(location: card.close.location, length: end - card.close.location)
+        s.addAttribute(.mdLine, value: MarkdownLine.cardClose.rawValue, range: card.close)
+        dim(line, s)
+        s.addAttributes([.mdBlockPrefix: true, .font: NSFont.systemFont(ofSize: (theme.fontSize * 0.7).rounded())], range: line)
+        concealAsLineStart(line, s)
+        s.addAttribute(.paragraphStyle, value: cardCloseParagraph, range: card.close)
+        s.addAttributes([.mdCard: number, .mdCardColor: card.color.rawValue], range: card.range)
+    }
+
+    /// A line around a row of cards: all syntax.
+    private func styleRowLine(_ kind: MarkdownLine, _ paragraph: NSRange, _ s: NSTextStorage, _ ns: NSString) {
+        var end = NSMaxRange(paragraph)
+        while end > paragraph.location, ns.character(at: end - 1) == 0x0A || ns.character(at: end - 1) == 0x0D { end -= 1 }
+        let line = NSRange(location: paragraph.location, length: end - paragraph.location)
+        s.addAttribute(.mdLine, value: kind.rawValue, range: paragraph)
+        dim(line, s)
+        s.addAttributes([.mdBlockPrefix: true, .font: NSFont.systemFont(ofSize: (theme.fontSize * 0.7).rounded())], range: line)
+        concealAsLineStart(line, s)
+        s.addAttribute(.paragraphStyle, value: rowLineParagraph, range: paragraph)
+    }
+
+    /// The cards of a row stand side by side as the cells of a text table with one row: each card's
+    /// paragraphs are one cell, all cells equally wide. (TextKit 1 has no other way to set editable text
+    /// in columns.) Not in a note too narrow for them: there they stay one below the other.
+    private func putSideBySide(_ row: CardSyntax.Row, _ cards: [CardSyntax.Card], _ s: NSTextStorage, _ ns: NSString, width: CGFloat?) {
+        let count = row.cards.count
+        guard count > 1 else { return }
+        if let width, width / CGFloat(count) < theme.cardMinimumWidth { return }
+        let table = NSTextTable()
+        table.numberOfColumns = count
+        table.layoutAlgorithm = .fixedLayoutAlgorithm
+        table.collapsesBorders = false
+        table.hidesEmptyCells = false
+        for (column, index) in row.cards.enumerated() {
+            // No widths: the columns share the line equally. The space between two cards is padding of
+            // their cells, half of it on each side (the outer edges stay where a single card's are).
+            let cell = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1, startingColumn: column, columnSpan: 1)
+            if column > 0 { cell.setWidth(theme.cardRowGap / 2, type: .absoluteValueType, for: .padding, edge: .minX) }
+            if column < count - 1 { cell.setWidth(theme.cardRowGap / 2, type: .absoluteValueType, for: .padding, edge: .maxX) }
+            var location = cards[index].range.location
+            while location < NSMaxRange(cards[index].range) {
+                let paragraph = ns.paragraphRange(for: NSRange(location: location, length: 0))
+                let current = s.attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle
+                let style = (current ?? baseParagraph).mutableCopy() as! NSMutableParagraphStyle
+                style.textBlocks = [cell]
+                s.addAttribute(.paragraphStyle, value: style, range: paragraph)
+                location = NSMaxRange(paragraph)
+            }
+        }
+    }
+
+    /// Syntax that is hidden at the start of a line: its first character becomes a box of no width
+    /// rather than nothing, because TextKit 1 lays the hidden (null) glyphs a paragraph starts with out
+    /// on the line before it — which moves that line, and breaks a table cell that starts with them.
+    private func concealAsLineStart(_ syntax: NSRange, _ s: NSTextStorage) {
+        guard syntax.length > 0 else { return }
+        s.addAttribute(.mdConcealBox, value: CGFloat(0), range: NSRange(location: syntax.location, length: 1))
+    }
+
+    /// Moves a paragraph in from both sides, keeping its own indents (a list item's, a code block's).
+    private func inset(_ paragraph: NSRange, by inset: CGFloat, _ s: NSTextStorage) {
+        guard paragraph.length > 0 else { return }
+        let current = s.attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle
+        let style = (current ?? baseParagraph).mutableCopy() as! NSMutableParagraphStyle
+        style.firstLineHeadIndent += inset
+        style.headIndent += inset
+        style.tailIndent -= inset
+        s.addAttribute(.paragraphStyle, value: style, range: paragraph)
+    }
+
+    /// Whether `line` is part of a fenced code block (its fences included), moving `fence` past it.
+    private func isFenced(_ line: NSRange, _ text: String, _ ns: NSString, _ fence: inout Fence?) -> Bool {
+        if let open = fence {
+            if let m = fenceClose.firstMatch(in: text, range: line) {
+                let marker = m.range(at: 1)
+                if ns.character(at: marker.location) == open.character, marker.length >= open.length { fence = nil }
+            }
+            return true
+        }
+        if let m = fenceOpen.firstMatch(in: text, range: line) {
+            let marker = m.range(at: 1)
+            fence = Fence(character: ns.character(at: marker.location), length: marker.length)
+            return true
+        }
+        return false
+    }
+
+    // MARK: 強調表示
+
+    /// The states of the to-dos in `storage` (styled).
+    static func taskStates(in storage: NSTextStorage) -> Set<TaskState> {
+        let ns = storage.string as NSString
+        var states: Set<TaskState> = []
+        storage.enumerateAttribute(.mdTaskToggle, in: NSRange(location: 0, length: ns.length)) { value, _, _ in
+            guard let check = value as? Int, check < ns.length, let state = TaskState(character: ns.character(at: check)) else { return }
+            states.insert(state)
+        }
+        return states
+    }
+
+    /// 強調表示: the paper is darkened (by the window) and every card with it, so a to-do in the emphasized
+    /// state is written in white — and with it what is nested under it: the lines that follow it and are
+    /// indented deeper than it (Tab nests a list item under the one above). Every other line, a card's
+    /// title too, fades to `theme.focusFade` of its colors.
+    private func applyFocus(_ focus: NoteFocus, _ s: NSTextStorage, _ ns: NSString) {
+        /// How deep the emphasized to-do is indented whose nested lines the pass is in.
+        var parent: Int?
+        var location = 0
+        while location < ns.length {
+            let paragraph = ns.paragraphRange(for: NSRange(location: location, length: 0))
+            location = NSMaxRange(paragraph)
+            var state: TaskState?
+            s.enumerateAttribute(.mdTaskToggle, in: paragraph) { value, _, stop in
+                guard let check = value as? Int, check < ns.length else { return }
+                state = TaskState(character: ns.character(at: check))
+                stop.pointee = true
+            }
+            let kind = (s.attribute(.mdLine, at: paragraph.location, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
+            if s.attribute(.mdCard, at: paragraph.location, effectiveRange: nil) != nil {
+                s.addAttribute(.mdCardShade, value: true, range: paragraph)
+            }
+            // The indentation, and whether anything follows it on the line.
+            var end = paragraph.location
+            while end < NSMaxRange(paragraph), ns.character(at: end) == 0x20 || ns.character(at: end) == 0x09 { end += 1 }
+            let depth = self.depth(of: NSRange(location: paragraph.location, length: end - paragraph.location), ns)
+            let isEmpty = end == NSMaxRange(paragraph) || ns.character(at: end) == 0x0A || ns.character(at: end) == 0x0D
+            var isLit = false
+            if kind.isCardStructure {
+                parent = nil // nothing is nested across a card's edge
+            } else if state == focus.state {
+                isLit = true
+                parent = min(parent ?? depth, depth)
+            } else if let outer = parent {
+                // An empty line between nested lines does not end them.
+                if isEmpty || depth > outer { isLit = true } else { parent = nil }
+            }
+            if isLit {
+                recolor(paragraph, s) { isText($0) ? theme.focusInk.withAlphaComponent($0.alphaComponent) : $0 }
+                s.addAttribute(.mdInk, value: theme.focusInk, range: paragraph)
+            } else {
+                recolor(paragraph, s) { $0.withAlphaComponent($0.alphaComponent * theme.focusFade) }
+                s.addAttribute(.mdFade, value: theme.focusFade, range: paragraph)
+            }
+        }
+    }
+
+    /// The text color or a tint of it (links, markers, muted text), which white replaces on dark paper.
+    private func isText(_ color: NSColor) -> Bool {
+        guard let c = color.usingColorSpace(.sRGB), let t = theme.textColor.usingColorSpace(.sRGB) else { return false }
+        return abs(c.redComponent - t.redComponent) + abs(c.greenComponent - t.greenComponent) + abs(c.blueComponent - t.blueComponent) < 0.01
+    }
+
+    private func recolor(_ range: NSRange, _ s: NSTextStorage, _ change: (NSColor) -> NSColor) {
+        for key in [NSAttributedString.Key.foregroundColor, .underlineColor, .strikethroughColor] {
+            s.enumerateAttribute(key, in: range) { value, run, _ in
+                guard let color = value as? NSColor else { return }
+                s.addAttribute(key, value: change(color), range: run)
+            }
+        }
     }
 
     /// On a Japanese system, font fixing gives "[" and "]" in the system font a Japanese fallback font,
@@ -302,7 +628,7 @@ final class MarkdownStyler {
             if lineKind == .text { lineKind = .task }
             let box = m.range(at: 3)
             let checkLocation = box.location + 1
-            let isChecked = ns.character(at: checkLocation) != 0x20 // " "
+            let state = TaskState(character: ns.character(at: checkLocation)) ?? .todo
             // "- [ ] ": concealed, the whole prefix is one list-column-wide box holding the checkbox.
             let marker = m.range(at: 2)
             let prefix = NSRange(location: marker.location, length: NSMaxRange(m.range) - marker.location)
@@ -316,7 +642,7 @@ final class MarkdownStyler {
             hangingIndent += CGFloat(depth(of: m.range(at: 1), ns) + 1) * theme.listColumn
             prefixEnd = NSMaxRange(m.range)
             content = NSRange(location: prefixEnd, length: NSMaxRange(line) - prefixEnd)
-            if isChecked {
+            if state == .done {
                 s.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue,
                                  .strikethroughColor: theme.mutedColor,
                                  .foregroundColor: theme.mutedColor], range: content)
@@ -518,7 +844,8 @@ final class MarkdownStyler {
 
     /// Only characters that are syntax in this app: "\\{", "\\%", "\\\"" typed in a note stay as typed.
     private static let escapable = Set("\\`*_~[]()#+-.>!".utf16)
-    private static func isEscapable(_ c: unichar) -> Bool { escapable.contains(c) }
+    /// (Also asked by the import from Notion: a backslash before any other character would be shown.)
+    static func isEscapable(_ c: unichar) -> Bool { escapable.contains(c) }
 
     private func isFree(_ range: NSRange, _ claimed: [NSRange]) -> Bool {
         !claimed.contains { NSIntersectionRange($0, range).length > 0 }

@@ -356,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if !result.notionOnly.isEmpty {
                 info += "\n\nNotion にしかない要素（\(result.notionOnly.joined(separator: "、"))）は、付箋ではタグや記号の文字のまま表示されます。次に Notion へ送るときも文字として送られるため、Notion 側ではその要素が普通の文字になります。"
             }
-            if result.notionOnly.contains("取得できなかったブロック") || result.notionOnly.contains("画像・ファイル") {
+            if !Set(result.notionOnly).isDisjoint(with: ["取得できなかったブロック", "画像・ファイル", "ブックマーク・埋め込み"]) {
                 info += "ブックマーク・埋め込み・アップロードしたファイルは付箋には残らず、次に送ったときに Notion のページからも消えます（ファイルのリンクには有効期限があります）。"
             }
             alert.informativeText = info
@@ -422,6 +422,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     - [ ] チェックボックスはクリックで切り替え
     - [x] 完了したタスクは取り消し線
     - 箇条書きは Return で自動継続（空の項目で Return すると終了）
+
+    :::card orange プロジェクト
+    - [/] 進行中のタスク（クリックで完了）
+    - [>] 待機のタスク（クリックで進行中に。⌥クリックで待機にする・外す）
+    - [ ] カードは名前のタグや余白をつかんで動かせます
+    :::
 
     > 消してしまった文章や閉じたメモは「ファイル > メモの履歴…」から戻せます。
     [Apple](https://www.apple.com) は ⌘クリックで開きます。

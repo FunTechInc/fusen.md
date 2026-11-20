@@ -20,6 +20,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     var onImportFromNotion: (@MainActor (NoteWindowController) -> Void)?
     /// Whether 「Notion の内容を取り込む」 is available for this note.
     var canImportFromNotion: (@MainActor (NoteWindowController) -> Bool)?
+    /// 強調表示: the two buttons at the right of the title bar, one per `NoteFocus`.
+    private var focusButtons: [NSButton] = []
+    private let focusAccessory = NSTitlebarAccessoryViewController()
 
     init(meta: NoteMeta, body: String, store: NoteStore, history: HistoryStore, styler: MarkdownStyler,
          concealsMarkdown: Bool) {
@@ -43,12 +46,15 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
         configure(panel)
         configureTextView(in: panel)
+        configureFocusButtons(in: panel)
         panel.setFrame(Self.onScreen(meta.frame), display: false)
+        textView.focus = meta.focus
         applyWindowState()
 
         textView.typingAttributes = styler.baseAttributes
         textView.string = body
         restyle()
+        updateFocusButtons()
         panel.title = NoteTitle.derive(from: body)
         panel.delegate = self
         textView.delegate = self
@@ -122,7 +128,64 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
             : [.fullScreenAuxiliary]
         panel.alphaValue = meta.isTranslucent ? 0.72 : 1.0
-        panel.backgroundColor = meta.color.background
+        panel.backgroundColor = meta.focus == nil ? meta.color.background : styler.theme.focusPaper(meta.color.background)
+    }
+
+    // MARK: 強調表示
+
+    private func configureFocusButtons(in panel: NSPanel) {
+        focusButtons = NoteFocus.allCases.enumerated().map { index, focus in
+            let image = TaskSignalIcon.image(focus.state, theme: styler.theme, size: Self.focusButtonSize)
+            let button = NSButton(image: image, target: self, action: #selector(toggleFocus(_:)))
+            button.tag = index
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.toolTip = focus.title
+            button.setAccessibilityLabel(focus.title)
+            return button
+        }
+        let stack = NSStackView(views: focusButtons)
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 10)
+        stack.frame.size = stack.fittingSize
+        focusAccessory.view = stack
+        focusAccessory.layoutAttribute = .trailing
+        panel.addTitlebarAccessoryViewController(focusAccessory)
+    }
+
+    /// The buttons show which emphasis is on (the other one fades), and only on a note that has signals.
+    private func updateFocusButtons() {
+        let theme = styler.theme
+        for (focus, button) in zip(NoteFocus.allCases, focusButtons) {
+            let isOther = meta.focus != nil && meta.focus != focus
+            // (The ring of a signal is drawn in the ink of the paper: white once the paper is darkened.)
+            button.image = TaskSignalIcon.image(focus.state, theme: theme, size: Self.focusButtonSize,
+                                                ink: meta.focus == nil ? nil : theme.focusInk,
+                                                alpha: isOther ? theme.focusButtonFade : 1)
+        }
+        let hasSignals = MarkdownStyler.taskStates(in: textStorage).contains(where: \.isSignal)
+        focusAccessory.isHidden = !hasSignals && meta.focus == nil
+    }
+
+    static let focusButtonSize: CGFloat = 18
+
+    /// A button or a menu item (tag: the index in `NoteFocus.allCases`): turns that emphasis on, or off
+    /// if it is on.
+    @objc func toggleFocus(_ sender: Any?) {
+        let tag = (sender as? NSControl)?.tag ?? (sender as? NSMenuItem)?.tag ?? -1
+        guard NoteFocus.allCases.indices.contains(tag) else { return }
+        setFocus(meta.focus == NoteFocus.allCases[tag] ? nil : NoteFocus.allCases[tag])
+    }
+
+    func setFocus(_ focus: NoteFocus?) {
+        guard focus != meta.focus else { return }
+        meta.focus = focus
+        textView.focus = focus
+        applyWindowState()
+        Self.restyle(textView, with: styler)
+        updateFocusButtons()
+        store.updateMeta(meta)
     }
 
     private static func onScreen(_ frame: CGRect) -> CGRect {
@@ -134,7 +197,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     private func restyle() {
         guard let storage = textView.textStorage else { return }
-        styler.restyle(storage)
+        styler.restyle(storage, focus: meta.focus, width: textView.textContainer?.size.width)
     }
 
     /// Replaces the text with an older version; ⌘Z undoes it and the replaced text is kept in history.
@@ -201,7 +264,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     /// turns the line into a list item whose hidden marker would hold the caret.
     static func restyle(_ textView: MarkdownTextView, with styler: MarkdownStyler) {
         guard let storage = textView.textStorage else { return }
-        styler.restyle(storage)
+        styler.restyle(storage, focus: textView.focus, width: textView.textContainer?.size.width)
+        textView.updateInsertionPointColor()
         guard textView.concealsMarkdown else { return }
         let ranges = textView.selectedRanges
         let adjusted = adjusted(ranges, from: ranges, in: storage)
@@ -214,6 +278,11 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
                   toAttributes newTypingAttributes: [NSAttributedString.Key: Any] = [:]) -> [NSAttributedString.Key: Any] {
         var attributes = styler.baseAttributes
         if let font = newTypingAttributes[.font] as? NSFont, !font.isFixedPitch { attributes[.font] = font }
+        // On the darkened paper of 強調表示, what is being typed (and composed) shows in the caret's color.
+        if meta.focus != nil { attributes[.foregroundColor] = textView.insertionPointColor }
+        // In a card the text view lets composed text take over the line's place in the card (see
+        // MarkdownTextView.prepareCompositionAttributes): that is kept.
+        for (key, value) in (textView as? MarkdownTextView)?.cardTypingAttributes() ?? [:] { attributes[key] = value }
         return attributes
     }
 
@@ -226,6 +295,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         // reading is not worth saving. Committing sends another textDidChange, which styles and saves.
         guard !textView.hasMarkedText() else { return }
         Self.restyle(textView, with: styler)
+        updateFocusButtons()
         store.updateBody(textView.string, for: meta.id)
         window?.title = NoteTitle.derive(from: textView.string)
     }
@@ -233,7 +303,17 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     // MARK: NSWindowDelegate
 
     func windowDidMove(_ notification: Notification) { persistFrame() }
-    func windowDidResize(_ notification: Notification) { persistFrame() }
+    func windowDidResize(_ notification: Notification) {
+        persistFrame()
+        // Cards stand side by side only in a note wide enough for them (see MarkdownStyler.restyle).
+        if !textView.hasMarkedText(), let storage = textView.textStorage, storage.length > 0 {
+            var hasRows = false
+            storage.enumerateAttribute(.mdCardRow, in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+                if value != nil { hasRows = true; stop.pointee = true }
+            }
+            if hasRows { Self.restyle(textView, with: styler) }
+        }
+    }
     func windowWillClose(_ notification: Notification) { onClose?(self) }
 
     private func persistFrame() {
@@ -287,6 +367,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             item.state = meta.isOnAllSpaces ? .on : .off
         case #selector(setNoteColor(_:)):
             item.state = NoteColor.allCases.firstIndex(of: meta.color) == item.tag ? .on : .off
+        case #selector(toggleFocus(_:)):
+            item.state = meta.focus.flatMap(NoteFocus.allCases.firstIndex(of:)) == item.tag ? .on : .off
         case #selector(importFromNotion(_:)):
             return canImportFromNotion?(self) ?? false
         default:
