@@ -53,7 +53,8 @@ final class TestNote {
             context.cgContext.saveGState()
             context.cgContext.translateBy(x: 0, y: rect.minY + rect.maxY) // the icons are drawn y-down
             context.cgContext.scaleBy(x: 1, y: -1)
-            TaskSignalIcon.draw(.doing, in: rect, theme: MarkdownTheme(), alpha: CGFloat(ring.opacity), ring: .arc)
+            TaskSignalIcon.draw(.doing, in: rect, theme: (textView.layoutManager as? ConcealingLayoutManager)?.theme ?? MarkdownTheme(),
+                                alpha: CGFloat(ring.opacity), ring: .arc)
             context.cgContext.restoreGState()
         }
         if let chrome = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) {

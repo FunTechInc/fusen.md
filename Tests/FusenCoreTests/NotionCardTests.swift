@@ -24,7 +24,7 @@ struct NotionCardTests {
         進行中
         </todo>
 
-        <todo checked="false" color="orange">
+        <todo checked="false" color="yellow">
         待機
         </todo>
 
@@ -134,14 +134,21 @@ struct NotionCardTests {
         #expect(export("::::columns\n本文\n::::") == "::::columns\n\n本文\n\n::::")
     }
 
+    @Test func aWaitingToDoIsYellowAndAnOrangeOneFromBeforeIsWaitingToo() {
+        #expect(fromNotion("<todo checked=\"false\" color=\"yellow\">\n次\n</todo>") == "- [>] 次")
+        #expect(fromNotion("<todo checked=\"false\" color=\"yellow_bg\">\n次\n</todo>") == "- [>] 次")
+        #expect(fromNotion("<todo checked=\"false\" color=\"orange\">\n前の版\n</todo>") == "- [>] 前の版")
+        #expect(NotionMarkdown.signal(forColor: "red") == nil && NotionMarkdown.signal(forColor: nil) == nil)
+    }
+
     @Test func aSignalIsAToDoTagInItsColor() {
         // A color is an attribute, so a signal is always written as a tag; other to-dos stay Markdown.
         #expect(export("- [/] 進行中\n- [>] 待機\n- [ ] 未着手") ==
-                "<todo checked=\"false\" color=\"blue\">\n進行中\n</todo>\n\n<todo checked=\"false\" color=\"orange\">\n待機\n</todo>\n\n- [ ] 未着手")
+                "<todo checked=\"false\" color=\"blue\">\n進行中\n</todo>\n\n<todo checked=\"false\" color=\"yellow\">\n待機\n</todo>\n\n- [ ] 未着手")
         #expect(export("- [/] ") == "<todo checked=\"false\" color=\"blue\">\n</todo>") // no text yet
         // What is nested in a signal, or holds one, is written between the tags of its parent.
         #expect(export("- [/] 親\n\t- [ ] 子\n\t\t- 孫") == "<todo checked=\"false\" color=\"blue\">\n親\n\n- [ ] 子\n  - 孫\n</todo>")
-        #expect(export("- [ ] 親\n\t- [>] 子") == "<todo checked=\"false\">\n親\n\n<todo checked=\"false\" color=\"orange\">\n子\n</todo>\n</todo>")
+        #expect(export("- [ ] 親\n\t- [>] 子") == "<todo checked=\"false\">\n親\n\n<todo checked=\"false\" color=\"yellow\">\n子\n</todo>\n</todo>")
         #expect(export("- 親\n\t- [/] 子") == "<ul>\n<li>\n親\n\n<todo checked=\"false\" color=\"blue\">\n子\n</todo>\n</li>\n</ul>")
         // Braces the note itself has are text; this format has no syntax in them.
         #expect(export("- [ ] 文字 {color=\"blue\"}") == "- [ ] 文字 {color=\"blue\"}")

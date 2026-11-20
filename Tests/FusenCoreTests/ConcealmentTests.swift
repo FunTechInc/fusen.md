@@ -112,7 +112,8 @@ struct ConcealmentTests {
     @Test func syntaxIsHiddenAlsoOnTheLineBeingEdited() {
         let e = ConcealedEditor("# 見出し\nこれは**太字**と[リンク](https://example.com)")
         e.click(e.index(of: "太字")) // the caret on that line: still concealed, as in Notion
-        #expect(e.property(at: 0) == .null)                                  // "#"
+        // "# ": its first character a box of no width (so that the line keeps its place), the rest nothing.
+        #expect(e.property(at: 0) == .controlCharacter && e.property(at: 1) == .null)
         #expect(e.property(at: e.index(of: "**")) == .null)                  // "**"
         #expect(e.property(at: e.index(of: "](https")) == .null)             // link URL
         #expect(e.property(at: e.index(of: "太字")) != .null)
@@ -224,7 +225,7 @@ struct ConcealmentTests {
         e.type("##")
         #expect(e.property(at: 0) != .null)                // "##" alone is still text
         e.type(" 見出し")
-        #expect(e.property(at: 0) == .null)                // now an h2; its "## " disappears
+        #expect(e.property(at: 0) == .controlCharacter && e.property(at: 1) == .null) // now an h2; its "## " disappears
         #expect(e.caret == e.text.utf16.count)
         let line = ConcealedEditing.line(at: 0, in: e.storage)
         #expect(line.kind == .h2)
@@ -376,7 +377,7 @@ struct ConcealmentTests {
         #expect(e.property(at: e.index(of: "にほんご")) != .null) // the composing text is never hidden
         e.textView.insertText("日本語", replacementRange: e.textView.markedRange())
         #expect(e.text == "# 見出し\n**太字**\n日本語")
-        #expect(e.property(at: 0) == .null)
+        #expect(e.property(at: 0) == .controlCharacter && e.property(at: 1) == .null)
         // Composing right after "## " goes into the heading.
         let h = ConcealedEditor("")
         h.type("## ")
@@ -421,5 +422,58 @@ struct ConcealmentTests {
                               ("file:///etc/hosts", false), ("smb://server/share", false), ("x-app://do", false)] {
             #expect(MarkdownTextView.opensLink(try #require(URL(string: link))) == opens, "\(link)")
         }
+    }
+
+    @Test func textComposedInAHeadingIsHeadingSizedFromTheFirstKey() throws {
+        // A plain-text view keeps its typing attributes when the caret moves: composed text took the body's
+        // font until it was committed and styled.
+        let theme = MarkdownTheme()
+        for (text, needle, font) in [("本文\n## 見出し", "見出し", theme.headingFont(level: 2)), ("# 大見出し", "大見出し", theme.headingFont(level: 1)),
+                                     ("> 引用", "引用", theme.quoteFont), ("## 見出し\n本文", "本文", theme.bodyFont)] {
+            let note = TestNote(text)
+            let caret = (text as NSString).range(of: needle).location + 1
+            note.textView.setSelectedRange(NSRange(location: caret, length: 0))
+            note.textView.setMarkedText("t", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            let storage = try #require(note.textView.textStorage)
+            #expect(storage.attribute(.font, at: note.textView.markedRange().location, effectiveRange: nil) as? NSFont == font, "\(text)")
+            note.textView.unmarkText()
+        }
+        // On the darkened paper of 強調表示, in the light ink.
+        let focused = TestNote("- [/] 作業\n本文", focus: .doing)
+        focused.textView.setSelectedRange(NSRange(location: (focused.textView.string as NSString).length, length: 0))
+        focused.textView.setMarkedText("t", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(focused.textView.textStorage?.attribute(.foregroundColor, at: focused.textView.markedRange().location, effectiveRange: nil) as? NSColor
+                == theme.focusInk)
+    }
+
+    @Test func theCaretStaysOnAHeadingThatHasNoTextYet() {
+        // "# " just typed is all hidden syntax; TextKit lays hidden glyphs that start a paragraph out on the
+        // line above, and the caret showed there (after "本文") until a letter was typed.
+        func caretRect(_ e: ConcealedEditor) -> NSRect {
+            var count = 0
+            let caret = NSRange(location: e.caret, length: 0)
+            let rects = e.layoutManager.rectArray(forCharacterRange: caret, withinSelectedCharacterRange: caret,
+                                                  in: e.layoutManager.textContainers[0], rectCount: &count)
+            return count > 0 ? rects![0] : .zero
+        }
+        for (before, typed, after) in [("本文\n", "# ", ""), ("本文\n", "## ", ""), ("本文\n", "# ", "\n次の行"), ("", "# ", "")] {
+            let e = ConcealedEditor(before + after)
+            e.click((before as NSString).length)
+            e.type(typed)
+            #expect(ConcealedEditing.line(at: e.caret, in: e.storage).kind.headingLevel != nil, "\(before)\(typed)")
+            let firstLine = e.layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+            let rect = caretRect(e)
+            if before.isEmpty {
+                #expect(rect.minY < firstLine.maxY && rect.height > 21, "the heading is the first line")
+            } else {
+                #expect(rect.minY >= firstLine.maxY, "\(before)\(typed): caret at \(rect), first line \(firstLine)")
+            }
+            #expect(abs(rect.minX - e.layoutManager.textContainers[0].lineFragmentPadding) < 0.5)
+        }
+        // A divider at the very end (no line break after it) is on its own line too.
+        let rule = ConcealedEditor("本文\n---")
+        let first = rule.layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        let ruleLine = rule.layoutManager.lineFragmentRect(forGlyphAt: rule.layoutManager.glyphIndexForCharacter(at: 3), effectiveRange: nil)
+        #expect(ruleLine.minY >= first.maxY)
     }
 }

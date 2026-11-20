@@ -16,7 +16,13 @@ import AppKit
 /// TextKit 1 on purpose: hiding characters needs glyph-level control (null and control glyphs), which
 /// TextKit 2 does not offer.
 final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
-    let theme: MarkdownTheme
+    /// The light or the dark theme (the note window switches it with the appearance).
+    var theme: MarkdownTheme {
+        didSet {
+            guard theme.isDark != oldValue.isDark, let length = textStorage?.length else { return }
+            invalidateDisplay(forCharacterRange: NSRange(location: 0, length: length))
+        }
+    }
     /// When false, nothing is concealed (all Markdown shown as typed).
     var concealsMarkdown = true {
         didSet {
@@ -373,16 +379,16 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         for card in cardGeometries(in: characters) {
             func tone(_ color: NSColor) -> NSColor { card.isShaded ? theme.shaded(color) : color }
             let fade = card.isShaded ? theme.focusFade : 1
-            tone(card.color.frame).setFill()
+            tone(card.color.frame(isDark: theme.isDark)).setFill()
             NSBezierPath(roundedRect: card.frame.offsetBy(dx: origin.x, dy: origin.y), xRadius: theme.cardRadius, yRadius: theme.cardRadius).fill()
-            tone(card.color.tag).setFill()
+            tone(card.color.tag(isDark: theme.isDark)).setFill()
             for tag in card.tags {
                 NSBezierPath(roundedRect: tag.offsetBy(dx: origin.x, dy: origin.y), xRadius: theme.cardTagRadius, yRadius: theme.cardTagRadius).fill()
             }
             if card.titleIsEmpty, let tag = card.tags.first {
                 let font = theme.cardTitleFont
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: font, .foregroundColor: (card.isShaded ? theme.focusInk : card.color.tagText).withAlphaComponent(0.45 * fade)]
+                    .font: font, .foregroundColor: (card.isShaded ? theme.focusInk : card.color.tagText(isDark: theme.isDark)).withAlphaComponent(0.45 * fade)]
                 let baseline = tag.midY + font.capHeight / 2 // like a title: its capitals in the middle of the tag
                 (theme.cardTitlePlaceholder as NSString).draw(
                     at: NSPoint(x: tag.minX + theme.cardTagPadding + origin.x, y: baseline - font.ascender + origin.y), withAttributes: attributes)

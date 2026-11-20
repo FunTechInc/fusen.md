@@ -14,7 +14,12 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private let layoutManager: ConcealingLayoutManager
     private let store: NoteStore
     private let history: HistoryStore
-    private let styler: MarkdownStyler
+    /// The light and the dark styler (and theme): the note follows the appearance of its window, which
+    /// is the app's (外観 in the settings: the system's, light or dark).
+    private let lightStyler: MarkdownStyler
+    private let darkStyler: MarkdownStyler
+    private(set) var isDark = false
+    private var styler: MarkdownStyler { isDark ? darkStyler : lightStyler }
     var onClose: (@MainActor (NoteWindowController) -> Void)?
     var onShowHistory: (@MainActor (NoteWindowController) -> Void)?
     var onImportFromNotion: (@MainActor (NoteWindowController) -> Void)?
@@ -25,11 +30,12 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private let focusAccessory = NSTitlebarAccessoryViewController()
 
     init(meta: NoteMeta, body: String, store: NoteStore, history: HistoryStore, styler: MarkdownStyler,
-         concealsMarkdown: Bool) {
+         darkStyler: MarkdownStyler? = nil, concealsMarkdown: Bool) {
         self.meta = meta
         self.store = store
         self.history = history
-        self.styler = styler
+        lightStyler = styler
+        self.darkStyler = darkStyler ?? MarkdownStyler(theme: .dark)
 
         let panel = NotePanel(contentRect: NSRect(origin: .zero, size: meta.frame.size),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .utilityWindow],
@@ -55,9 +61,25 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView.string = body
         restyle()
         updateFocusButtons()
+        updateAppearance()
+        textView.onAppearanceChange = { [weak self] in self?.updateAppearance() }
         panel.title = NoteTitle.derive(from: body)
         panel.delegate = self
         textView.delegate = self
+    }
+
+    /// Light or dark, as the window now looks (the app calls this when the appearance changes): the
+    /// paper, the text's colors (restyled), the cards and signals, the caret and the buttons follow.
+    func updateAppearance() {
+        let dark = window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        guard dark != isDark else { return }
+        isDark = dark
+        layoutManager.theme = styler.theme
+        textView.typingAttributes = styler.baseAttributes
+        applyWindowState()
+        restyle()
+        updateFocusButtons()
+        textView.themeDidChange()
     }
 
     /// Shows all Markdown as typed (false), or none of it, also while editing (true, as in Notion).
@@ -83,7 +105,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         panel.becomesKeyOnlyIfNeeded = false
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 160, height: 90)
-        panel.appearance = NSAppearance(named: .aqua) // pastel paper in dark mode too, like Stickies
     }
 
     private func configureTextView(in panel: NSPanel) {
@@ -135,7 +156,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
             : [.fullScreenAuxiliary]
         panel.alphaValue = meta.isTranslucent ? 0.72 : 1.0
-        panel.backgroundColor = meta.focus == nil ? meta.color.background : styler.theme.focusPaper(meta.color.background)
+        let paper = styler.theme.paper(meta.color)
+        panel.backgroundColor = meta.focus == nil ? paper : styler.theme.focusPaper(paper)
     }
 
     // MARK: 強調表示

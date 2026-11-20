@@ -44,9 +44,19 @@ struct GeneralSettingsView: View {
     @State private var isRecording = false
     @State private var monitor: Any?
     @State private var hint: String?
+    @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
 
     var body: some View {
         Form {
+            Section("外観") {
+                Picker("付箋と画面", selection: $appearance) {
+                    ForEach(AppAppearance.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appearance) { (AppAppearance(rawValue: appearance) ?? .system).apply() }
+                Text("「ライト」にすると、システムがダークモードでも付箋はパステルの紙のままです。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("表示・非表示のショートカット") {
                 Text("ほかのアプリを使っているときでも、このショートカットで付箋をすべて隠したり、表示したりできます。付箋が見えているときは隠し、隠れているかほかのウインドウの後ろにあるときは手前に表示します。1 枚でも、一部でも見えていれば隠します。")
                     .fixedSize(horizontal: false, vertical: true)

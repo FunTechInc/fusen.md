@@ -237,11 +237,11 @@ struct SlashMenuTests {
         let arc = try color(.doing, selected: false, 0.87, 0.29)
         #expect(arc.blueComponent > 0.8 && arc.redComponent < 0.3)
         #expect(isWhite(try color(.doing, selected: true, 0.87, 0.29)))
-        // Waiting: a bar of the pause sign, and its ring at 9 o'clock.
-        let bar = try color(.waiting, selected: false, 0.35, 0.5)
-        #expect(bar.redComponent > 0.75 && bar.blueComponent < 0.25)
-        #expect(isWhite(try color(.waiting, selected: true, 0.35, 0.5)))
-        #expect(isWhite(try color(.waiting, selected: true, 0.055, 0.5)))
+        // Waiting: the middle of the star, and the box's left side.
+        let star = try color(.waiting, selected: false, 0.5, 0.49)
+        #expect(star.redComponent > 0.55 && star.blueComponent < 0.25)
+        #expect(isWhite(try color(.waiting, selected: true, 0.5, 0.49)))
+        #expect(isWhite(try color(.waiting, selected: true, 0.046, 0.5)))
     }
 
     private func render(_ panel: SlashMenuPanel, _ name: String) throws {
@@ -271,7 +271,7 @@ struct SlashMenuTests {
         #expect(note.textView.slashMenu?.selected == 0)
         #expect(panel.shownRows.contains(0))
         try render(panel, "slash-menu.png")
-        note.textView.insertText("s", replacementRange: note.textView.selectedRange())      // "/s": nothing fits
+        note.textView.insertText("z", replacementRange: note.textView.selectedRange())      // "/z": nothing fits
         #expect(note.window.childWindows?.isEmpty != false)
         #expect(note.textView.slashMenu == nil)
     }

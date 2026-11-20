@@ -211,7 +211,7 @@ struct TaskStateTests {
         進行中
         </todo>
 
-        <todo checked="false" color="orange">
+        <todo checked="false" color="yellow">
         待機
         </todo>
 
@@ -233,7 +233,7 @@ struct TaskStateTests {
             return rep.colorAt(x: Int(x), y: Int(y))?.usingColorSpace(.sRGB)
         }
         func isBlue(_ c: NSColor?) -> Bool { c.map { $0.blueComponent > 0.8 && $0.redComponent < 0.3 && $0.greenComponent < 0.65 } ?? false }
-        func isOrange(_ c: NSColor?) -> Bool { c.map { $0.redComponent > 0.75 && $0.greenComponent > 0.3 && $0.greenComponent < 0.6 && $0.blueComponent < 0.25 } ?? false }
+        func isAmber(_ c: NSColor?) -> Bool { c.map { $0.redComponent > 0.55 && $0.greenComponent > 0.35 && $0.greenComponent < 0.6 && $0.blueComponent < 0.2 } ?? false }
         // The ring under the arc: the text color, faint (a pale gray on the view's white).
         func isRing(_ c: NSColor?) -> Bool { c.map { $0.saturationComponent < 0.08 && $0.brightnessComponent > 0.75 && $0.brightnessComponent < 0.93 } ?? false }
         // Nothing drawn: the view's (white) background.
@@ -248,12 +248,11 @@ struct TaskStateTests {
         #expect(isRing(color(ring, 0.5, 0.93)))         // at 6 o'clock
         #expect(isEmpty(color(ring, 0.5, 0.5)))
 
-        // Waiting: a pause sign, all in orange — a ring, and two bars with a gap between them in its middle.
-        let pause = try #require(e.layoutManager.taskIconRect(forCharacterAt: e.index(of: "- [>]")))
-        #expect(isOrange(color(pause, 0.055, 0.5)) && isOrange(color(pause, 0.5, 0.945)) && isOrange(color(pause, 0.5, 0.055)))
-        #expect(isOrange(color(pause, 0.35, 0.5)) && isOrange(color(pause, 0.65, 0.5)))    // the bars
-        #expect(isEmpty(color(pause, 0.5, 0.5)))                                            // between them
-        #expect(isEmpty(color(pause, 0.5, 0.25)) && isEmpty(color(pause, 0.2, 0.5)))        // between the bars and the ring
+        // Waiting: the checkbox's square with a star in it, both amber.
+        let next = try #require(e.layoutManager.taskIconRect(forCharacterAt: e.index(of: "- [>]")))
+        #expect(isAmber(color(next, 0.046, 0.5)) && isAmber(color(next, 0.954, 0.5)) && isAmber(color(next, 0.5, 0.046)))  // the square
+        #expect(isAmber(color(next, 0.5, 0.49)) && isAmber(color(next, 0.5, 0.27)))                                      // the star
+        #expect(isEmpty(color(next, 0.15, 0.85)) && isEmpty(color(next, 0.5, 0.86)) && isEmpty(color(next, 0.15, 0.2)))   // around it
 
         if let dir = ProcessInfo.processInfo.environment["MARKDOWN_STICKIES_RENDER_DIR"] {
             try data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("signals.png"))
