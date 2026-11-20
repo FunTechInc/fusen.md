@@ -275,4 +275,37 @@ struct SlashMenuTests {
         #expect(note.window.childWindows?.isEmpty != false)
         #expect(note.textView.slashMenu == nil)
     }
+
+    @Test func theMenuIsOnlyForWhatWasTypedAfterTheSlash() {
+        // "/" before text that was there: moving into that text closes the menu, so Return does not take it.
+        let e = ConcealedEditor("h2資料")
+        e.click(0)
+        e.type("/")
+        #expect(e.textView.slashMenu != nil)
+        e.key { e.textView.moveRight(nil) }
+        #expect(e.textView.slashMenu == nil)
+        e.key { e.textView.moveRight(nil) }
+        e.key { e.textView.insertNewline(nil) }
+        #expect(e.text == "/h2\n資料")
+        // Back into what was typed, too.
+        let back = ConcealedEditor("")
+        back.type("/ca")
+        back.key { back.textView.moveLeft(nil) }
+        #expect(back.textView.slashMenu == nil)
+    }
+
+    @Test func aNumberedListGoesOnAfterANumberedToDoAndAtTheSameDepth() {
+        func turned(_ text: String) -> String {
+            let e = ConcealedEditor(text)
+            e.click((text as NSString).length)
+            e.type("/number")
+            e.key { e.textView.insertNewline(nil) }
+            return e.text
+        }
+        #expect(turned("7. [x] 済み\n") == "7. [x] 済み\n8. ")
+        #expect(turned("3) 項目\n") == "3) 項目\n4) ")
+        #expect(turned("\t7. 項目\n  ") == "\t7. 項目\n  8. ")      // a tab and two spaces are one level
+        #expect(turned("7. 項目\n\t") == "7. 項目\n\t1. ")          // deeper: a list of its own
+        #expect(turned("- [ ] 項目\n") == "- [ ] 項目\n1. ")
+    }
 }

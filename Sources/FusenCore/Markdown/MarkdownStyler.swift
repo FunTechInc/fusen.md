@@ -460,18 +460,44 @@ final class MarkdownStyler {
         return false
     }
 
-    // MARK: 強調表示
+    // MARK: To-dos
+
+    /// Where the state of the to-do whose prefix holds `index` is written ("- [/] ": the "/"), if `index`
+    /// is in one. Found in the prefix itself: the attribute's value is where it was when the text was last
+    /// styled, and text being composed with the IME further up (which is not restyled until it is
+    /// committed) moves the to-do away from it.
+    nonisolated static func taskCheck(at index: Int, in s: NSAttributedString) -> Int? {
+        guard index >= 0, index < s.length else { return nil }
+        let ns = s.string as NSString
+        var run = NSRange()
+        guard s.attribute(.mdTaskToggle, at: index, longestEffectiveRange: &run,
+                          in: ns.paragraphRange(for: NSRange(location: index, length: 0))) != nil else { return nil }
+        var i = run.location
+        while i + 2 < NSMaxRange(run) {
+            if ns.character(at: i) == 0x5B, TaskState(character: ns.character(at: i + 1)) != nil, ns.character(at: i + 2) == 0x5D {
+                return i + 1
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// The state of the to-do whose prefix holds `index`, if it is in one.
+    nonisolated static func taskState(at index: Int, in s: NSAttributedString) -> TaskState? {
+        taskCheck(at: index, in: s).flatMap { TaskState(character: (s.string as NSString).character(at: $0)) }
+    }
 
     /// The states of the to-dos in `storage` (styled).
     static func taskStates(in storage: NSTextStorage) -> Set<TaskState> {
-        let ns = storage.string as NSString
         var states: Set<TaskState> = []
-        storage.enumerateAttribute(.mdTaskToggle, in: NSRange(location: 0, length: ns.length)) { value, _, _ in
-            guard let check = value as? Int, check < ns.length, let state = TaskState(character: ns.character(at: check)) else { return }
+        storage.enumerateAttribute(.mdTaskToggle, in: NSRange(location: 0, length: storage.length)) { value, run, _ in
+            guard value != nil, let state = taskState(at: run.location, in: storage) else { return }
             states.insert(state)
         }
         return states
     }
+
+    // MARK: 強調表示
 
     /// 強調表示: the paper is darkened (by the window) and every card with it, so a to-do in the emphasized
     /// state is written in white — and with it what is nested under it: the lines that follow it and are

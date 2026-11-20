@@ -743,6 +743,29 @@ struct NotionSyncTests {
         #expect(api.calls.first == .replace(page: "page-1", markdown: "起動後に変わった"))
     }
 
+    @Test func aNoteWhoseFileCannotBeReadIsNeverSentEmpty() async throws {
+        let long = String(repeating: "大事なメモの本文。", count: 40)
+        let id = await pushedNote(long)
+        store.flush()
+        // As at a launch with the notes folder moved away: the file is gone, the note is still known.
+        try FileManager.default.removeItem(at: store.bodyURL(for: id))
+        api.calls = []
+        let relaunched = Self.makeSync(store: store, api: api, tokens: tokens, clock: clock)
+        relaunched.start()
+        await relaunched.processDue()
+        clock.advance(20 * 60) // past the hold for large deletions
+        await relaunched.processDue()
+        clock.advance(20 * 60)
+        await relaunched.processDue()
+        #expect(api.writes.isEmpty)
+        #expect(relaunched.pendingCount == 1) // waiting for the file, not forgotten
+        // The file is back with an edit: that goes out.
+        try Data((long + "追記").utf8).write(to: store.bodyURL(for: id))
+        clock.advance(61)
+        await relaunched.processDue()
+        #expect(api.calls.contains(.replace(page: "page-1", markdown: long + "追記")))
+    }
+
     // MARK: Errors
 
     @Test func unauthorizedStopsSyncingUntilTheUserActs() async {

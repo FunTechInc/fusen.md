@@ -403,4 +403,23 @@ struct ConcealmentTests {
         plain.key { plain.textView.insertTab(nil) }
         #expect(plain.text == "本文\t") // outside lists Tab types a tab
     }
+
+    @Test func hidingTheMarkdownAgainTakesTheCaretOutOfWhatIsHidden() {
+        // ⇧⌘M to edit a link's URL, and back: the caret is not left in the URL, which is hidden now.
+        let note = TestNote("[資料](https://example.com/ab)")
+        note.controller.setConcealsMarkdown(false)
+        let inURL = (note.textView.string as NSString).range(of: "/ab").location + 2
+        note.textView.setSelectedRange(NSRange(location: inURL, length: 0))
+        note.controller.setConcealsMarkdown(true)
+        #expect(note.textView.selectedRange().location == (note.textView.string as NSString).length)
+        note.textView.insertText("X", replacementRange: note.textView.selectedRange())
+        #expect(note.textView.string == "[資料](https://example.com/ab)X")
+    }
+
+    @Test func onlyWebAndMailLinksAreOpened() throws {
+        for (link, opens) in [("https://example.com", true), ("HTTP://example.com", true), ("mailto:a@example.com", true),
+                              ("file:///etc/hosts", false), ("smb://server/share", false), ("x-app://do", false)] {
+            #expect(MarkdownTextView.opensLink(try #require(URL(string: link))) == opens, "\(link)")
+        }
+    }
 }

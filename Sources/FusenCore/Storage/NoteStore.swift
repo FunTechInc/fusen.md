@@ -16,6 +16,15 @@ final class NoteStore {
         var notes: [NoteMeta]
     }
 
+    /// index.json as it is read: an entry that cannot be read is left out, and the others still load.
+    private struct LoadedIndex: Decodable {
+        struct Entry: Decodable {
+            let meta: NoteMeta?
+            init(from decoder: Decoder) throws { meta = try? NoteMeta(from: decoder) }
+        }
+        var notes: [Entry]
+    }
+
     static var defaultRootURL: URL {
         #if DEBUG
         let folder = "fusen.md-Debug" // `swift run` must never touch the real notes
@@ -130,6 +139,32 @@ final class NoteStore {
         return decode(data, of: id, at: url)
     }
 
+    /// What is in a note's file now (not the text being edited, and without taking the file's date as
+    /// seen, as `body(of:)` does).
+    enum FileText: Equatable {
+        case missing
+        /// It is there but cannot be read (no permission, an I/O error).
+        case unreadable
+        case text(String)
+    }
+
+    func fileText(of id: UUID) -> FileText {
+        let url = bodyURL(for: id)
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        guard let data = try? Data(contentsOf: url) else { return .unreadable }
+        return .text(String(decoding: data, as: UTF8.self))
+    }
+
+    /// Whether a note's file holds text, or may (it cannot be read): then the note is not one that never
+    /// had any content, whatever its window shows.
+    func fileHoldsText(_ id: UUID) -> Bool {
+        switch fileText(of: id) {
+        case .missing: false
+        case .unreadable: true
+        case .text(let text): !text.allSatisfy(\.isWhitespace)
+        }
+    }
+
     /// UTF-8 text; otherwise the original bytes are copied aside once and the text is decoded lossily.
     private func decode(_ data: Data, of id: UUID, at url: URL) -> String {
         if let text = String(data: data, encoding: .utf8) { return text }
@@ -151,9 +186,18 @@ final class NoteStore {
             do {
                 // A hand-edited index may list a note twice; keep the first entry.
                 var seen = Set<UUID>()
-                let notes = try decoder.decode(Index.self, from: data).notes
+                let entries = try decoder.decode(LoadedIndex.self, from: data).notes
+                let notes = entries.compactMap(\.meta)
                 metas = notes.filter { seen.insert($0.id).inserted }
                 if metas.count != notes.count { indexDirty = true }
+                if notes.count != entries.count {
+                    // Some entries could not be read (their notes come back as open notes, if their files
+                    // are there): the index is kept as it was before it is written again.
+                    let copy = rootURL.appendingPathComponent("index-partly-unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                    try? FileManager.default.copyItem(at: indexURL, to: copy)
+                    NSLog("fusen.md: %d entries of index.json unreadable; copied to %@", entries.count - notes.count, copy.path)
+                    indexDirty = true
+                }
             } catch {
                 // Never overwrite an index we could not read: keep a copy before starting over.
                 let copy = rootURL.appendingPathComponent("index-unreadable-\(Int(Date().timeIntervalSince1970)).json")
@@ -214,12 +258,14 @@ final class NoteStore {
         onNoteChanged?(meta.id, body)
     }
 
-    /// Window state changes. `deletedAt` is owned by the store and never taken from the caller,
-    /// so a late window callback cannot resurrect a deleted note.
+    /// Window state changes. `deletedAt` and `modified` are owned by the store and never taken from the
+    /// caller: a late window callback cannot resurrect a deleted note, and a window that was moved after
+    /// its text changed (its copy of the metadata is from when it opened) does not set the time back.
     func updateMeta(_ meta: NoteMeta) {
         guard let i = metas.firstIndex(where: { $0.id == meta.id }) else { return }
         var updated = meta
         updated.deletedAt = metas[i].deletedAt
+        updated.modified = metas[i].modified
         guard updated != metas[i] else { return }
         let colorChanged = updated.color != metas[i].color
         metas[i] = updated

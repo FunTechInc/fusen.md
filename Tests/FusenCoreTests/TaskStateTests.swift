@@ -288,4 +288,19 @@ struct TaskStateTests {
         e.textView.updateTaskSpinners()
         #expect(overlay.rings.count == 1)
     }
+
+    @Test func textComposedAboveAToDoInProgressDoesNotChangeItsSignal() throws {
+        // While the IME composes, the note is not restyled, so a to-do further down is no longer where its
+        // attributes said it was. Its state is read from its own prefix, which moved with it.
+        let note = TestNote("本文\n- [/] 作業")
+        let storage = try #require(note.textView.textStorage)
+        note.textView.setSelectedRange(NSRange(location: 2, length: 0))
+        note.textView.setMarkedText("あ", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        let prefix = (storage.string as NSString).range(of: "- [/]").location
+        #expect(MarkdownStyler.taskCheck(at: prefix, in: storage) == prefix + 3)
+        #expect(MarkdownStyler.taskState(at: prefix, in: storage) == .doing)
+        note.textView.updateTaskSpinners()
+        #expect(note.textView.spinnerOverlay?.rings.count == 1)  // the arc stays
+        note.textView.unmarkText()
+    }
 }

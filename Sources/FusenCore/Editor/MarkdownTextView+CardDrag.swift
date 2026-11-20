@@ -62,13 +62,21 @@ extension MarkdownTextView {
             }
         }
 
-        // The room each piece takes, top to bottom.
+        // The room each piece takes, top to bottom; and which places between them are inside a code block,
+        // where a card would be code (the lines of a block are pieces of their own, as other lines are).
         var rooms: [NSRect] = []
+        var inCode: [Bool] = [false] // before each piece
+        var fenced = false
         var next = 0
         var offset = 0
         for (index, piece) in arrangement.pieces.enumerated() {
+            defer { inCode.append(fenced) }
             switch piece {
             case .line(let line):
+                if offset < storage.length,
+                   (storage.attribute(.mdLine, at: offset, effectiveRange: nil) as? String) == MarkdownLine.fence.rawValue {
+                    fenced.toggle()
+                }
                 if offset < storage.length {
                     let glyph = layout.glyphIndexForCharacter(at: offset)
                     rooms.append(layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
@@ -93,7 +101,7 @@ extension MarkdownTextView {
             }
         }
         // Between them (and above the first, below the last).
-        for index in 0...rooms.count where changes(.before(piece: index)) {
+        for index in 0...rooms.count where !inCode[index] && changes(.before(piece: index)) {
             let y: CGFloat
             if rooms.isEmpty { y = 0 }
             else if index == 0 { y = rooms[0].minY }

@@ -116,6 +116,8 @@ final class NotionSync {
         var maxWait: TimeInterval = 60
         /// How long a destructive change is held.
         var hold: TimeInterval = 15 * 60
+        /// How long a note whose file cannot be read waits before it is tried again.
+        var unreadableRetry: TimeInterval = 60
         var firstRetry: TimeInterval = 15
         var maxRetry: TimeInterval = 10 * 60
     }
@@ -572,7 +574,7 @@ final class NotionSync {
     }
 
     private func needsPush(_ meta: NoteMeta) -> Bool {
-        let snap = snapshot(of: meta)
+        guard let snap = snapshot(of: meta) else { return true } // unreadable: push() waits for it
         guard let entry = state.notes[meta.id.uuidString] else {
             return !meta.isDeleted && !snap.markdown.isEmpty
         }
@@ -655,8 +657,8 @@ final class NotionSync {
             requeue() // stopped on purpose (quitting, connecting elsewhere): sent next time
         case NotionError.validation(let message):
             if let meta = store.meta(id) {
-                rejected[id] = snapshot(of: meta).hash
-                let title = NoteTitle.derive(from: text(of: id))
+                if let snap = snapshot(of: meta) { rejected[id] = snap.hash }
+                let title = NoteTitle.derive(from: text(of: id) ?? "")
                 lastError = Self.refusesToDeleteChildContent(message)
                     ? "「\(title)」の本文を同期できませんでした。Notion でこのメモのページにサブページかデータベースが追加されていて、本文を置き換えると消えてしまうためです。それをページの外へ移動してから「今すぐ同期」を押してください。"
                     : "「\(title)」を同期できませんでした。\(message)"
@@ -688,7 +690,7 @@ final class NotionSync {
         guard let entry = state.notes[key] else {
             // Never mirrored: nothing to mark for a deleted note, nothing to back up in an empty one.
             guard let meta, !meta.isDeleted else { return }
-            let snap = snapshot(of: meta)
+            guard let snap = snapshot(of: meta) else { return waitForUnreadable(id) }
             guard !snap.markdown.isEmpty, rejected[id] != snap.hash else { return }
             if let found = try await c.client.queryPages(dataSourceID: c.dataSourceID, property: Property.noteID, equals: key).first {
                 try record(NotionSyncState.Note(pageID: found.id), for: key, c) // created before a crash, never recorded
@@ -727,7 +729,7 @@ final class NotionSync {
             entry.status = Status.deleted
             return try record(entry, for: key, c)
         }
-        let snap = snapshot(of: meta)
+        guard let snap = snapshot(of: meta) else { return waitForUnreadable(id) }
         var sendContent = entry.lastPushedHash != snap.hash && rejected[id] != snap.hash
         if sendContent, isDestructive(snap.length, comparedTo: entry.lastPushedLength) {
             let t = now()
@@ -833,8 +835,9 @@ final class NotionSync {
         return length == 0 || (last > 200 && Double(length) < Double(last) * 0.4)
     }
 
-    private func snapshot(of meta: NoteMeta) -> Snapshot {
-        let body = text(of: meta.id)
+    /// Nil while the note's file cannot be read.
+    private func snapshot(of meta: NoteMeta) -> Snapshot? {
+        guard let body = text(of: meta.id) else { return nil }
         let markdown = NotionMarkdown.export(body, styler: styler)
         let hash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
         return Snapshot(markdown: markdown, hash: hash, length: markdown.count, title: NoteTitle.derive(from: body),
@@ -844,16 +847,26 @@ final class NotionSync {
     /// The note's latest text: the text from the change callback while it is newer than the file,
     /// otherwise the file (lossily decoded if it is not UTF-8). Never `NoteStore.body(of:)`, which
     /// records the file's date as seen: another app's edit would then be overwritten without the
-    /// store's history copy.
-    private func text(of id: UUID) -> String {
+    /// store's history copy. Nil if the file cannot be read (it is missing — its folder moved away —
+    /// or not readable): that is not an empty note, and must never replace the page with nothing.
+    private func text(of id: UUID) -> String? {
         let url = store.bodyURL(for: id)
         if let unsaved = unsavedText[id] {
             let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
             guard let modified, modified >= unsaved.since else { return unsaved.text }
             unsavedText[id] = nil // saved since (or changed by another app)
         }
-        guard let data = try? Data(contentsOf: url) else { return "" }
+        guard let data = try? Data(contentsOf: url) else { return nil }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// A note whose file cannot be read is sent once it can: nothing goes to Notion meanwhile.
+    private func waitForUnreadable(_ id: UUID) {
+        NSLog("fusen.md: the text of note %@ cannot be read; not sent to Notion for now", id.uuidString)
+        let t = now()
+        var item = pending[id] ?? Pending(firstChange: t, lastChange: t, immediate: true)
+        item.notBefore = t.addingTimeInterval(timing.unreadableRetry)
+        pending[id] = item
     }
 
     private func allProperties(_ snap: Snapshot, _ meta: NoteMeta) -> [String: NotionPropertyValue] {

@@ -200,4 +200,13 @@ struct CardDragTests {
         #expect(note.textView.cardCursor(at: NSPoint(x: content.midX, y: geometry.frame.maxY - 2)) == .openHand)
         #expect(note.textView.cardCursor(at: NSPoint(x: 20, y: 4)) == nil)
     }
+
+    @Test func aCardIsNotDroppedIntoACodeBlock() {
+        let note = TestNote("~~~\na\nb\n~~~\n```\n```\n" + card("blue T", "x"), size: CGSize(width: 320, height: 300))
+        let between = layout(note).cardGeometries().isEmpty ? [] : note.textView.cardDropTargets(forCard: 0)
+            .compactMap { target -> Int? in if case .before(let piece) = target.destination { piece } else { nil } }
+        // Pieces: ~~~, a, b, ~~~, ```, ```, the card. Above a block and after it, never inside it — an empty
+        // block included.
+        #expect(between == [0, 4])
+    }
 }

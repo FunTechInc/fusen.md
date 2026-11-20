@@ -390,7 +390,7 @@ final class MarkdownTextView: NSTextView {
         if let style = typingStyle, !keepsTypingStyle, !hasMarkedText(), new != NSRange(location: style.location, length: 0) {
             typingStyle = nil
         }
-        if slashMenu != nil, !isChangingText { refreshSlashMenu() }
+        if slashMenu != nil, !isChangingText { refreshSlashMenu(textChanged: false) }
     }
 
     // MARK: Deleting (concealed)
@@ -498,7 +498,8 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func deleteBackwardByDecomposingPreviousCharacter(_ sender: Any?) {
-        guard concealedEditing, let storage = textStorage,
+        // (At the very start, ⌃⌫ has nothing to look at before the caret, and nothing to delete.)
+        guard concealedEditing, let storage = textStorage, selectedRange().length > 0 || selectedRange().location > 0,
               selectedRange().length > 0 || ConcealedEditing.onlySyntax(between: selectedRange().location - 1,
                                                                          and: selectedRange().location, in: storage)
         else { return super.deleteBackwardByDecomposingPreviousCharacter(sender) }
@@ -563,8 +564,16 @@ final class MarkdownTextView: NSTextView {
         if selectedRange().length > 0 {
             // Unless the new text could not stand in a span: a line break, or space at its ends.
             let fits = text.map { !$0.isEmpty && !$0.contains(where: \.isNewline) && !$0.first!.isWhitespace && !$0.last!.isWhitespace }
-            deleteKeepingSyntax(selectedRange(), replacing: fits ?? true)
+            let deletion = ConcealedEditing.deletion(of: selectedRange(), in: storage, replacing: fits ?? true)
+            apply(deletion, actionName: "削除")
             changed = true
+            // Whole lines went (a whole card): what replaces them is a line of its own, not the start of the
+            // card that follows them, whose title the caret would otherwise be moved into.
+            let after = ConcealedEditing.line(at: deletion.caret, in: storage)
+            if deletion.caret == after.range.location, after.kind == .cardOpen || after.kind == .rowOpen,
+               replaceCharacters(in: NSRange(location: deletion.caret, length: 0), with: "\n", actionName: "削除") {
+                setSelectedRange(NSRange(location: deletion.caret, length: 0))
+            }
         }
         let line = ConcealedEditing.line(at: selectedRange().location, in: storage)
         if line.kind == .rule, text?.hasPrefix("\n") != true,
@@ -920,12 +929,14 @@ final class MarkdownTextView: NSTextView {
     // MARK: Mouse
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 1, let location = attributeValue(.mdTaskToggle, under: event, precise: true) as? Int {
-            clickTask(checkLocation: location, option: event.modifierFlags.contains(.option))
+        // (With the Markdown shown, a click on "[>]" puts the caret there, to edit it.)
+        if event.clickCount == 1, concealsMarkdown, let index = characterIndex(with: .mdTaskToggle, under: event, precise: true),
+           let check = MarkdownStyler.taskCheck(at: index, in: textStorage!) {
+            clickTask(checkLocation: check, option: event.modifierFlags.contains(.option))
             return
         }
         if event.modifierFlags.contains(.command), let url = attributeValue(.mdLink, under: event, precise: false) as? URL {
-            NSWorkspace.shared.open(url)
+            if Self.opensLink(url) { NSWorkspace.shared.open(url) } else { NSSound.beep() }
             return
         }
         if event.clickCount == 1, clickCard(event) || clickBelowLastCard(event) { return }
@@ -935,6 +946,13 @@ final class MarkdownTextView: NSTextView {
     // MARK: Cards
 
     /// The point of a mouse event in the text container's coordinates (the layout manager's).
+    /// Whether ⌘-click opens a link: web and mail links only (what a note sends to Notion as links, too).
+    /// A link can come from Notion or from pasted text and shows only its text: one to a file or to another
+    /// app's URL scheme is not opened from here.
+    static func opensLink(_ url: URL) -> Bool {
+        ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
+    }
+
     func containerPoint(_ event: NSEvent) -> NSPoint {
         let point = convert(event.locationInWindow, from: nil)
         return NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
@@ -1208,7 +1226,7 @@ final class MarkdownTextView: NSTextView {
 
     private func taskCheck(of line: ConcealedEditing.Line, _ storage: NSTextStorage) -> Int? {
         guard let prefix = line.prefix, prefix.length > 0 else { return nil }
-        return storage.attribute(.mdTaskToggle, at: NSMaxRange(prefix) - 1, effectiveRange: nil) as? Int
+        return MarkdownStyler.taskCheck(at: NSMaxRange(prefix) - 1, in: storage)
     }
 
     private func taskStateImage(_ state: TaskState) -> NSImage? {
@@ -1250,6 +1268,9 @@ final class MarkdownTextView: NSTextView {
     private var slashPanel: SlashMenuPanel?
     /// Set while the text is changing: the selection moves with it, and the menu is refreshed once after.
     private var isChangingText = false
+    /// Where what is typed for the menu ends: the caret after the last change of the text. The menu only
+    /// stands for what was typed after the "/", not for text that was there already.
+    private var slashQueryEnd = 0
 
     override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
         isChangingText = super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
@@ -1259,7 +1280,7 @@ final class MarkdownTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         isChangingText = false
-        if slashMenu != nil { refreshSlashMenu() }
+        if slashMenu != nil { refreshSlashMenu(textChanged: true) }
     }
 
     // Esc closes the menu (otherwise it is the text view's: word completion).
@@ -1285,13 +1306,14 @@ final class MarkdownTextView: NSTextView {
         let atStart = trigger == ConcealedEditing.visibleContentStart(of: line, in: storage)
         guard atStart || InlineFormatting.isSpace(ns.character(at: trigger - 1)) else { return }
         slashMenu = SlashMenu(trigger: trigger, commands: SlashCommand.matching(""))
+        slashQueryEnd = trigger + 1
         showSlashPanel()
     }
 
     /// After the text or the selection changed: what is typed after the "/" narrows the list. The menu
-    /// closes when nothing fits, when a space is typed, when the caret leaves what was typed, and when
-    /// what was typed makes the "/" code ("`a /`").
-    private func refreshSlashMenu() {
+    /// closes when nothing fits, when a space is typed, when the caret moves away from the end of what was
+    /// typed, and when what was typed makes the "/" code ("`a /`").
+    private func refreshSlashMenu(textChanged: Bool) {
         guard var menu = slashMenu, let storage = textStorage else { return }
         let ns = storage.string as NSString
         let selection = selectedRange()
@@ -1299,6 +1321,9 @@ final class MarkdownTextView: NSTextView {
               selection.location > menu.trigger,
               selection.location <= ConcealedEditing.line(at: menu.trigger, in: storage).contentsEnd,
               storage.attribute(.mdCode, at: menu.trigger, effectiveRange: nil) == nil else { return closeSlashMenu() }
+        // Typing (or deleting) moves where the query ends; the caret moving on its own (into text that was
+        // there already, or back into what was typed) closes the menu.
+        if textChanged { slashQueryEnd = selection.location } else if selection.location != slashQueryEnd { return closeSlashMenu() }
         let query = ns.substring(with: NSRange(location: menu.trigger + 1, length: selection.location - menu.trigger - 1))
         let commands = SlashCommand.matching(query)
         guard !commands.isEmpty, !query.contains(where: \.isWhitespace) else { return closeSlashMenu() }
@@ -1396,13 +1421,7 @@ final class MarkdownTextView: NSTextView {
         case .bullet:
             marker = indentation + "- "
         case .ordered:
-            // The next number, after a numbered item of the same list.
-            let above = start > 0 ? ConcealedEditing.line(at: start - 1, in: storage) : nil
-            let continued = above.flatMap { above -> String? in
-                guard above.kind == .ordered, let prefix = above.prefix else { return nil }
-                return ConcealedEditing.listPrefix(ns.substring(with: prefix), next: true, keepCheck: false)
-            }
-            marker = continued.flatMap { $0.prefix { $0 == " " || $0 == "\t" } == indentation[...] ? $0 : nil } ?? indentation + "1. "
+            marker = indentation + (nextNumber(after: start, depth: Self.depth(of: indentation), in: storage) ?? "1. ")
         case .quote:
             marker = "> "
         case .todo, .waiting, .doing:
@@ -1414,6 +1433,27 @@ final class MarkdownTextView: NSTextView {
         guard replaceCharacters(in: old, with: marker, actionName: command.title) else { return }
         let length = (marker as NSString).length
         setSelectedRange(NSRange(location: caret <= NSMaxRange(old) ? start + length : caret + length - old.length, length: 0))
+    }
+
+    private static let numberedItem = makeRegex(#"^([ \t]*)(\d{1,9})([.)])[ \t]"#)
+
+    /// Nesting depth from indentation, as the styler counts it: one level per tab or per two spaces.
+    private static func depth(of indentation: String) -> Int {
+        indentation.filter { $0 == "\t" }.count + indentation.filter { $0 == " " }.count / 2
+    }
+
+    /// The number (with its "." or ")" and a space) that goes on after the numbered item above the line
+    /// starting at `lineStart` — a numbered to-do too — if that is one at the same depth.
+    private func nextNumber(after lineStart: Int, depth: Int, in storage: NSTextStorage) -> String? {
+        guard lineStart > 0 else { return nil }
+        let above = ConcealedEditing.line(at: lineStart - 1, in: storage)
+        guard above.kind == .ordered || above.kind == .task else { return nil }
+        let text = (storage.string as NSString).substring(with: NSRange(location: above.range.location,
+                                                                        length: above.contentsEnd - above.range.location)) as NSString
+        guard let m = Self.numberedItem.firstMatch(in: text as String, range: NSRange(location: 0, length: text.length)),
+              Self.depth(of: text.substring(with: m.range(at: 1))) == depth,
+              let number = Int(text.substring(with: m.range(at: 2))) else { return nil }
+        return "\(number + 1)" + text.substring(with: m.range(at: 3)) + " "
     }
 
     /// The "/" menu's code block: the fences of an empty block on the caret's line if that is empty,
@@ -1504,11 +1544,9 @@ final class MarkdownTextView: NSTextView {
               let storage = textStorage else { return }
         var rings: [TaskSpinnerOverlay.Ring] = []
         if layoutManager.concealsMarkdown, storage.length > 0 {
-            let ns = storage.string as NSString
             let origin = textContainerOrigin
             storage.enumerateAttribute(.mdConcealBox, in: NSRange(location: 0, length: storage.length)) { value, run, _ in
-                guard value != nil, let check = storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) as? Int,
-                      check < ns.length, TaskState(character: ns.character(at: check)) == .doing,
+                guard value != nil, MarkdownStyler.taskState(at: run.location, in: storage) == .doing,
                       let rect = layoutManager.taskIconRect(forCharacterAt: run.location) else { return }
                 rings.append(TaskSpinnerOverlay.Ring(frame: rect.offsetBy(dx: origin.x, dy: origin.y),
                                                      opacity: Float(layoutManager.fade(at: run.location))))
@@ -1587,15 +1625,21 @@ final class MarkdownTextView: NSTextView {
     /// Attribute value under the mouse. `precise` also requires the pointer to be inside the
     /// run's glyph rectangle (so clicking just after a checkbox places the caret instead).
     private func attributeValue(_ key: NSAttributedString.Key, under event: NSEvent, precise: Bool) -> Any? {
+        characterIndex(with: key, under: event, precise: precise).flatMap { textStorage?.attribute(key, at: $0, effectiveRange: nil) }
+    }
+
+    /// A character with attribute `key` under the pointer (or next to it); with `precise`, only if the
+    /// pointer is on the run of that attribute.
+    private func characterIndex(with key: NSAttributedString.Key, under event: NSEvent, precise: Bool) -> Int? {
         guard let storage = textStorage, let window, storage.length > 0 else { return nil }
         let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
         let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
         for candidate in [index, index - 1] where candidate >= 0 && candidate < storage.length {
             var run = NSRange()
-            guard let value = storage.attribute(key, at: candidate, effectiveRange: &run) else { continue }
-            if !precise { return value }
+            guard storage.attribute(key, at: candidate, effectiveRange: &run) != nil else { continue }
+            if !precise { return candidate }
             let rect = firstRect(forCharacterRange: run, actualRange: nil).insetBy(dx: -2, dy: -2)
-            if rect.contains(screenPoint) { return value }
+            if rect.contains(screenPoint) { return candidate }
         }
         return nil
     }
