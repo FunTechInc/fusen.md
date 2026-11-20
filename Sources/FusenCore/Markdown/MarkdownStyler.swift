@@ -121,11 +121,14 @@ struct MarkdownTheme {
     /// every paper color.
     var doingColor = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
     var waitingColor = NSColor(srgbRed: 217 / 255, green: 115 / 255, blue: 13 / 255, alpha: 1)
-    /// 強調表示 (the Figma): the paper under 67 % black, the emphasized to-dos in white, everything else
-    /// at 31 %; the button of the emphasis that is off at 29 %.
-    var focusShade: CGFloat = 0.67
+    /// 強調表示: the paper under 80 % black, and on it everything in white — the emphasized to-dos (and
+    /// what is nested under them) as it is, everything else at 30 %. On every paper color the emphasized
+    /// lines are five times as clear (13:1 or more) as the others, which can still be read (2.5:1 or more).
+    /// (The Figma's 67 % black and 31 % of the dark text color: the other lines all but vanished.) The
+    /// button of the emphasis that is off is at 29 %.
+    var focusShade: CGFloat = 0.8
     var focusInk = NSColor.white
-    var focusFade: CGFloat = 0.31
+    var focusFade: CGFloat = 0.3
     var focusButtonFade: CGFloat = 0.29
 
     // Cards: a rounded rectangle in the card's color, with the title in a tag and "•••" at its top and
@@ -535,13 +538,15 @@ final class MarkdownStyler {
                 // An empty line between nested lines does not end them.
                 if isEmpty || depth > outer { isLit = true } else { parent = nil }
             }
-            if isLit {
-                recolor(paragraph, s) { isText($0) ? theme.focusInk.withAlphaComponent($0.alphaComponent) : $0 }
-                s.addAttribute(.mdInk, value: theme.focusInk, range: paragraph)
-            } else {
-                recolor(paragraph, s) { $0.withAlphaComponent($0.alphaComponent * theme.focusFade) }
-                s.addAttribute(.mdFade, value: theme.focusFade, range: paragraph)
+            // Every line is written in the light ink of the dark paper (a card's title too, on its darkened
+            // tag); a line that is not emphasized at `focusFade` of it. Other colors (code, the signals) keep
+            // their hue.
+            recolor(paragraph, s) { color in
+                let inked = isText(color) || kind == .cardOpen ? theme.focusInk.withAlphaComponent(color.alphaComponent) : color
+                return isLit ? inked : inked.withAlphaComponent(inked.alphaComponent * theme.focusFade)
             }
+            s.addAttribute(.mdInk, value: theme.focusInk, range: paragraph)
+            if !isLit { s.addAttribute(.mdFade, value: theme.focusFade, range: paragraph) }
         }
     }
 
@@ -650,7 +655,12 @@ final class MarkdownStyler {
             content = NSRange(location: prefixEnd, length: NSMaxRange(line) - prefixEnd)
         }
 
-        if let m = task.firstMatch(in: text, range: content) {
+        // In a quote, a list or to-do marker is text, as Notion has it: a quote is one block of text there,
+        // and the note sends "> - [ ] a" as such (NotionMarkdown). Shown as a to-do, it could be ticked here
+        // and would be words in Notion.
+        if lineKind == .quote {
+            // (Nothing more to find on the line.)
+        } else if let m = task.firstMatch(in: text, range: content) {
             if lineKind == .text { lineKind = .task }
             let box = m.range(at: 3)
             let checkLocation = box.location + 1

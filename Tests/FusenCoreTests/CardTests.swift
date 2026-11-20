@@ -519,9 +519,10 @@ struct CardTests {
             #expect(storage.attribute(.mdInk, at: index(needle), effectiveRange: nil) as? NSColor == theme.focusInk, "\(needle)")
             #expect(storage.attribute(.foregroundColor, at: index(needle), effectiveRange: nil) as? NSColor == theme.focusInk, "\(needle)")
         }
-        // Everything else in the cards fades, their titles too — also in the card that holds one.
+        // Everything else in the cards is in the light ink, fainter: their titles too (on their darkened tags),
+        // also in the card that holds one.
         #expect(storage.attribute(.foregroundColor, at: index("A\n"), effectiveRange: nil) as? NSColor
-                == CardColor.orange.tagText.withAlphaComponent(theme.focusFade))
+                == theme.focusInk.withAlphaComponent(theme.focusFade))
         #expect(abs(alpha("中の待機") - theme.focusFade) < 0.001)
         #expect(abs(alpha("未着手") - theme.focusFade) < 0.001)
         for needle in [":::card orange", "中の進行中", "中の待機", ":::card blue", "未着手"] {

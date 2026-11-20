@@ -48,7 +48,7 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section("表示・非表示のショートカット") {
-                Text("ほかのアプリを使っているときでも、このショートカットで付箋をすべて隠したり、表示したりできます。付箋が見えているときは隠し、隠れているかほかのウインドウの後ろにあるときは手前に表示します。")
+                Text("ほかのアプリを使っているときでも、このショートカットで付箋をすべて隠したり、表示したりできます。付箋が見えているときは隠し、隠れているかほかのウインドウの後ろにあるときは手前に表示します。1 枚でも、一部でも見えていれば隠します。")
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(isRecording ? "キーを押してください…" : (toggleShortcut.shortcut?.displayString ?? "使わない"))

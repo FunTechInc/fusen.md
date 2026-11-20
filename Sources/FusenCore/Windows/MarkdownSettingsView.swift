@@ -59,7 +59,7 @@ struct MarkdownSettingsView: View {
                 Text("タスクには、未着手・待機・進行中・完了の 4 つの状態があります。チェックボックスや信号をクリックすると、一歩進みます。")
                     .fixedSize(horizontal: false, vertical: true)
                 row("クリック", Text("待機 → 進行中 → 完了。未着手はそのまま完了に"), note: "⌘Return")
-                row("⌥クリック", Text("待機にする。待機のタスクは未着手に戻す"), note: "⌥⌘Return")
+                row("⌥クリック", Text("待機にする。待機のタスクは未着手に戻す"), note: "⌥⌘Return。複数行では揃える")
                 row("右クリック", Text("4 つの状態から選ぶ"), note: "「書式 > タスクの状態」でも")
             }
 
