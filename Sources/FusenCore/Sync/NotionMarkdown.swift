@@ -495,13 +495,22 @@ enum NotionMarkdown {
         color == .default ? "<callout icon=\"\(cardIcon)\">" : "<callout icon=\"\(cardIcon)\" color=\"\(color.rawValue)_bg\">"
     }
 
-    /// The color of a to-do that is in progress (the ring's blue) or waiting (the pause mark's orange).
+    /// The color of a to-do that is in progress (the ring's blue) or waiting (the star's yellow).
     static func signalColor(_ state: TaskState) -> String? {
         switch state {
         case .doing: "blue"
-        case .waiting: "orange"
+        case .waiting: "yellow"
         case .todo, .done: nil
         }
+    }
+
+    /// The signal of an unchecked to-do of `color` (as text or as background), if it is one: the colors the
+    /// app sends, and orange, which it sent for one that waits before that had a star.
+    static func signal(forColor color: String?) -> TaskState? {
+        guard let color else { return nil }
+        let name = color.hasSuffix("_bg") ? String(color.dropLast(3)) : color
+        if name == "orange" { return .waiting }
+        return TaskState.allCases.first { signalColor($0) == name }
     }
 
     /// A to-do as a tag: the only way to give it a color, or children that are not list items.
@@ -976,9 +985,7 @@ enum NotionMarkdown {
             element.keepsTags = false
         case "todo":
             // Unchecked and in the color of a signal (as text or as background): that signal.
-            let signal = TaskState.allCases.first { state in
-                signalColor(state).map { color == $0 || color == $0 + "_bg" } ?? false
-            }
+            let signal = signal(forColor: color)
             if tag.attributes["checked"] == "true" {
                 element.kind = .todo(.done)
             } else if let signal {

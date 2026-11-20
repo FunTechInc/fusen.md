@@ -99,6 +99,8 @@ func makeRegex(_ pattern: String) -> NSRegularExpression {
 /// values follow Notion's own layout and the widely used reproduction of its CSS in react-notion-x —
 /// scaled to a sticky note (1em = `fontSize`).
 struct MarkdownTheme {
+    /// The dark theme (see `dark`): the paper, the cards' colors and the colors here are its own.
+    var isDark = false
     var fontSize: CGFloat = 14
     /// Notion's text color, rgb(55, 53, 47).
     var textColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 1)
@@ -117,10 +119,10 @@ struct MarkdownTheme {
     var checkboxFill = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
     /// The marks of the signals (see TaskSignalIcon). The arc of a to-do in progress has the blue of the
     /// checked checkbox — what is being done and what is done are one color, as Notion's "In progress"
-    /// is blue too — and the pause mark of one that waits has Notion's orange, which holds its own on
-    /// every paper color.
+    /// is blue too — and the starred box of one that is next has a deep amber, the gold of a star that
+    /// still holds its own on the pastel papers (more than Notion's orange did).
     var doingColor = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
-    var waitingColor = NSColor(srgbRed: 217 / 255, green: 115 / 255, blue: 13 / 255, alpha: 1)
+    var waitingColor = NSColor(srgbRed: 0xB0 / 255, green: 0x7A / 255, blue: 0x00 / 255, alpha: 1)
     /// 強調表示: the paper under 80 % black, and on it everything in white — the emphasized to-dos (and
     /// what is nested under them) as it is, everything else at 30 %. On every paper color the emphasized
     /// lines are five times as clear (13:1 or more) as the others, which can still be read (2.5:1 or more).
@@ -172,6 +174,29 @@ struct MarkdownTheme {
     /// row are shown one below the other (the note's text stays as it is).
     var cardMinimumWidth: CGFloat = 110
 
+    /// ダークモード, after Notion's: light text (Notion's is white at 81 % on its dark paper), its inline
+    /// code a lighter red on a light veil, and the signals a little lighter than on pastel paper, where
+    /// they hold their own as they are.
+    static let dark: MarkdownTheme = {
+        var theme = MarkdownTheme()
+        theme.isDark = true
+        let text = NSColor(srgbRed: 228 / 255, green: 226 / 255, blue: 221 / 255, alpha: 1)
+        theme.textColor = text
+        theme.markerColor = text.withAlphaComponent(0.4)
+        theme.mutedColor = text.withAlphaComponent(0.5)
+        theme.linkUnderlineColor = text.withAlphaComponent(0.45)
+        theme.linkColor = text.withAlphaComponent(0.75)
+        theme.inlineCodeColor = NSColor(srgbRed: 255 / 255, green: 150 / 255, blue: 140 / 255, alpha: 1)
+        theme.codeBackground = NSColor(white: 1, alpha: 0.08)
+        theme.dividerColor = text.withAlphaComponent(0.18)
+        theme.doingColor = NSColor(srgbRed: 70 / 255, green: 156 / 255, blue: 236 / 255, alpha: 1)
+        theme.waitingColor = NSColor(srgbRed: 0xE8 / 255, green: 0xB3 / 255, blue: 0x3A / 255, alpha: 1)
+        return theme
+    }()
+
+    /// The paper of a note in this theme.
+    func paper(_ color: NoteColor) -> NSColor { isDark ? color.darkBackground : color.background }
+
     /// The paper of a note while 強調表示 is on: under black, as the Figma composites it (in sRGB;
     /// NSColor's own blending works in another space and comes out lighter).
     func focusPaper(_ paper: NSColor) -> NSColor { shaded(paper) }
@@ -197,6 +222,21 @@ struct MarkdownTheme {
     var bodyFont: NSFont { .systemFont(ofSize: fontSize) }
     func codeFont(size: CGFloat? = nil) -> NSFont {
         .monospacedSystemFont(ofSize: (size ?? fontSize) * 0.85, weight: .regular)
+    }
+    func headingFont(level: Int) -> NSFont {
+        .systemFont(ofSize: fontSize * headingScale[min(max(level, 1), 4) - 1], weight: .semibold)
+    }
+    var quoteFont: NSFont { .systemFont(ofSize: fontSize * quoteScale) }
+
+    /// The font of the text of a line of this kind (bold, italic and code spans aside).
+    func font(for kind: MarkdownLine) -> NSFont {
+        switch kind {
+        case .h1, .h2, .h3, .h4: headingFont(level: kind.headingLevel ?? 1)
+        case .quote: quoteFont
+        case .code, .fence: codeFont()
+        case .cardOpen: cardTitleFont
+        default: bodyFont
+        }
     }
 }
 
@@ -365,7 +405,7 @@ final class MarkdownStyler {
         dim(card.prefix, s)
         s.addAttribute(.mdBlockPrefix, value: true, range: card.prefix)
         concealAsLineStart(card.prefix, s)
-        s.addAttributes([.font: theme.cardTitleFont, .foregroundColor: card.color.tagText,
+        s.addAttributes([.font: theme.cardTitleFont, .foregroundColor: card.color.tagText(isDark: theme.isDark),
                          .baselineOffset: theme.cardTitleRise], range: card.title)
         s.addAttribute(.paragraphStyle, value: cardOpenParagraph, range: card.open)
     }
@@ -429,7 +469,8 @@ final class MarkdownStyler {
 
     /// Syntax that is hidden at the start of a line: its first character becomes a box of no width
     /// rather than nothing, because TextKit 1 lays the hidden (null) glyphs a paragraph starts with out
-    /// on the line before it — which moves that line, and breaks a table cell that starts with them.
+    /// on the line before it — which moves that line (and the caret on it, on a line that has nothing
+    /// else yet), and breaks a table cell that starts with them.
     private func concealAsLineStart(_ syntax: NSRange, _ s: NSTextStorage) {
         guard syntax.length > 0 else { return }
         s.addAttribute(.mdConcealBox, value: CGFloat(0), range: NSRange(location: syntax.location, length: 1))
@@ -613,13 +654,15 @@ final class MarkdownStyler {
             kind(.rule)
             dim(line, s)
             s.addAttributes([.mdBlockPrefix: true], range: line)
+            concealAsLineStart(line, s) // all syntax: "---" at the very end would sit on the line above
             s.addAttribute(.paragraphStyle, value: ruleParagraph, range: paragraph)
             return
         }
         if let m = heading.firstMatch(in: text, range: line) {
             let level = min(m.range(at: 1).length, 4) // Notion has four heading levels; 5 and 6 become 4
             kind(.heading(level))
-            let size = theme.fontSize * theme.headingScale[level - 1]
+            let font = theme.headingFont(level: level)
+            let size = font.pointSize
             let style = baseParagraph.mutableCopy() as! NSMutableParagraphStyle
             style.paragraphSpacingBefore = (size * 0.5).rounded() // Notion's is ~1em; halved for a sticky
             style.minimumLineHeight = (size * 1.3).rounded()
@@ -627,10 +670,13 @@ final class MarkdownStyler {
             s.addAttribute(.paragraphStyle, value: style, range: paragraph)
             // Font only on the line content, not on its newline: the newline keeps the body font,
             // so text typed (or composed with the IME) on the next line starts at body size.
-            s.addAttribute(.font, value: NSFont.systemFont(ofSize: size, weight: .semibold), range: line)
+            s.addAttribute(.font, value: font, range: line)
             dim(m.range, s)
             s.addAttribute(.mdBlockPrefix, value: true, range: NSRange(location: line.location,
                                                                         length: NSMaxRange(m.range) - line.location))
+            // A heading with no text yet ("# " just typed) is all hidden syntax: the caret would show on the
+            // line above until a letter is typed.
+            concealAsLineStart(m.range, s)
             styleInline(after: m.range, in: line, s, text)
             return
         }
@@ -644,8 +690,7 @@ final class MarkdownStyler {
             ?? (previous == .quote ? quoteContinuation.firstMatch(in: text, range: content) : nil) {
             lineKind = .quote
             // Notion's quote text is 1.2em; its line height grows with it.
-            let size = theme.fontSize * theme.quoteScale
-            s.addAttribute(.font, value: NSFont.systemFont(ofSize: size), range: line)
+            s.addAttribute(.font, value: theme.quoteFont, range: line)
             dim(m.range, s)
             pad(m.range, to: theme.quoteColumn, s, ns)
             // Concealed, the "> " becomes a box that holds Notion's quote bar; the text follows it.

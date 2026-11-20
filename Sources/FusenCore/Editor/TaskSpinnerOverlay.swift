@@ -15,7 +15,9 @@ final class TaskSpinnerOverlay: NSView {
     static let period: CFTimeInterval = 1.2
     private static let animationKey = "turn"
 
-    private let color: NSColor
+    var color: NSColor {
+        didSet { ringLayers.forEach { $0.strokeColor = color.cgColor } }
+    }
     private(set) var rings: [Ring] = []
     private var ringLayers: [CAShapeLayer] = []
     /// All rings turn together, whenever they appeared.

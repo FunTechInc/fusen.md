@@ -24,6 +24,19 @@ enum NoteColor: String, Codable, CaseIterable, Sendable {
         case .gray:   NSColor(srgbRed: 0.93, green: 0.93, blue: 0.93, alpha: 1)
         }
     }
+
+    /// The paper in ダークモード: the same hue, dark (about as light as Notion's dark pages), so that a
+    /// yellow note is still told from a blue one.
+    var darkBackground: NSColor {
+        switch self {
+        case .yellow: NSColor(srgbRed: 0x3A / 255, green: 0x35 / 255, blue: 0x24 / 255, alpha: 1)
+        case .blue:   NSColor(srgbRed: 0x22 / 255, green: 0x31 / 255, blue: 0x40 / 255, alpha: 1)
+        case .green:  NSColor(srgbRed: 0x25 / 255, green: 0x36 / 255, blue: 0x29 / 255, alpha: 1)
+        case .pink:   NSColor(srgbRed: 0x3E / 255, green: 0x2A / 255, blue: 0x33 / 255, alpha: 1)
+        case .purple: NSColor(srgbRed: 0x31 / 255, green: 0x2B / 255, blue: 0x43 / 255, alpha: 1)
+        case .gray:   NSColor(srgbRed: 0x2E / 255, green: 0x2E / 255, blue: 0x2E / 255, alpha: 1)
+        }
+    }
 }
 
 /// 強調表示: what a note emphasizes while one of its two buttons is on — only the to-dos in progress, or

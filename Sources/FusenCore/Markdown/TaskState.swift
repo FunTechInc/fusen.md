@@ -2,7 +2,7 @@ import Foundation
 
 /// The state of a to-do, written between the brackets of its marker: "- [ ]" not started, "- [>]"
 /// waiting (picked to do next), "- [/]" in progress, "- [x]" done. Waiting and in progress are the
-/// note's signals: they show a pause mark and a turning ring instead of the checkbox.
+/// note's signals: they show a starred box and a turning ring instead of the checkbox.
 enum TaskState: String, CaseIterable, Sendable {
     case todo = " "
     case waiting = ">"

@@ -172,6 +172,8 @@ final class HistoryModel {
 struct HistoryView: View {
     @Bindable var model: HistoryModel
     let styler: MarkdownStyler
+    let darkStyler: MarkdownStyler
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         NavigationSplitView {
@@ -197,9 +199,11 @@ struct HistoryView: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 250)
         } detail: {
             VStack(spacing: 0) {
+                // On the note's paper, light or dark as the window is.
+                let shown = colorScheme == .dark ? darkStyler : styler
                 MarkdownPreview(text: model.selectedVersion?.text ?? "",
-                                background: model.selectedNote?.color.background ?? .textBackgroundColor,
-                                styler: styler)
+                                background: model.selectedNote.map { shown.theme.paper($0.color) } ?? .textBackgroundColor,
+                                styler: shown)
                 Divider()
                 HStack {
                     Button("テキストをコピー") { model.copySelected() }
@@ -227,11 +231,12 @@ struct HistoryView: View {
 
 private struct NoteRow: View {
     let item: HistoryModel.NoteItem
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 3)
-                .fill(Color(nsColor: item.color.background))
+                .fill(Color(nsColor: colorScheme == .dark ? item.color.darkBackground : item.color.background))
                 .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(.black.opacity(0.15)))
                 .frame(width: 14, height: 14)
             VStack(alignment: .leading, spacing: 2) {
@@ -252,6 +257,7 @@ private struct MarkdownPreview: NSViewRepresentable {
 
     final class Coordinator {
         var storage: NSTextStorage? // the text storage owns the TextKit 1 stack
+        var isDark = false
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -278,7 +284,6 @@ private struct MarkdownPreview: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 12, height: 12)
 
         let scrollView = NSScrollView()
-        scrollView.appearance = NSAppearance(named: .aqua)
         NoteWindowController.configureScroller(of: scrollView)
         scrollView.drawsBackground = true
         scrollView.documentView = textView
@@ -287,8 +292,14 @@ private struct MarkdownPreview: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         scrollView.backgroundColor = background
-        guard let textView = scrollView.documentView as? NSTextView,
-              let storage = textView.textStorage, textView.string != text else { return }
+        guard let textView = scrollView.documentView as? NSTextView, let storage = textView.textStorage else { return }
+        if styler.theme.isDark != context.coordinator.isDark, let layout = textView.layoutManager as? ConcealingLayoutManager {
+            // Light or dark changed: the same text in the other theme.
+            context.coordinator.isDark = styler.theme.isDark
+            layout.theme = styler.theme
+            styler.restyle(storage)
+        }
+        guard textView.string != text else { return }
         textView.string = text
         styler.restyle(storage)
         textView.scrollToBeginningOfDocument(nil)
@@ -299,14 +310,14 @@ private struct MarkdownPreview: NSViewRepresentable {
 final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     let model: HistoryModel
 
-    init(model: HistoryModel, styler: MarkdownStyler) {
+    init(model: HistoryModel, styler: MarkdownStyler, darkStyler: MarkdownStyler) {
         self.model = model
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 540),
                               styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.title = "メモの履歴"
         window.isReleasedWhenClosed = false
-        window.contentViewController = NSHostingController(rootView: HistoryView(model: model, styler: styler))
+        window.contentViewController = NSHostingController(rootView: HistoryView(model: model, styler: styler, darkStyler: darkStyler))
         window.setContentSize(NSSize(width: 900, height: 540))
         window.center()
         window.setFrameAutosaveName("HistoryWindow")

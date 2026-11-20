@@ -1,10 +1,9 @@
 import AppKit
 
-/// What a to-do shows in its marker column: Notion's checkbox (not started, done) or a signal. The two
-/// signals are rings as large as the checkbox —
-///  * waiting: a pause sign, the ring and the two bars in it in the signal's orange;
-///  * in progress: a ring as faint as the app's dividers (so it sits on every paper color), and on it a
-///    bold blue arc, which is what turns.
+/// What a to-do shows in its marker column: Notion's checkbox (not started, done) or a signal —
+///  * waiting (to be done next, before the other to-dos): the checkbox with a star in it, both amber;
+///  * in progress: a ring as large as the checkbox and as faint as the app's dividers (so it sits on
+///    every paper color), and on it a bold blue arc, which is what turns.
 ///
 /// Everything here is in a coordinate system whose y axis points down, as in the (flipped) text view
 /// and the layers above it. Sizes are for a 14-point icon and scale with it.
@@ -22,15 +21,12 @@ enum TaskSignalIcon {
 
     /// In progress: how wide the ring and the arc on it are drawn.
     static func ringLineWidth(in rect: CGRect) -> CGFloat { rect.width * 2 / 14 }
-    /// Waiting: the ring of the pause sign is finer, about the weight of the checkbox's border, as it is
-    /// drawn in full color.
-    static func pauseRingLineWidth(in rect: CGRect) -> CGFloat { rect.width * 1.5 / 14 }
 
     private static func ringRadius(in rect: CGRect) -> CGFloat { (rect.width - ringLineWidth(in: rect)) / 2 }
 
-    /// The centre line of a ring drawn `lineWidth` wide (by default the ring under the arc).
-    static func ringPath(in rect: CGRect, lineWidth: CGFloat? = nil) -> CGPath {
-        let radius = (rect.width - (lineWidth ?? ringLineWidth(in: rect))) / 2
+    /// The ring's centre line.
+    static func ringPath(in rect: CGRect) -> CGPath {
+        let radius = ringRadius(in: rect)
         return CGPath(ellipseIn: CGRect(x: rect.midX - radius, y: rect.midY - radius, width: 2 * radius, height: 2 * radius), transform: nil)
     }
 
@@ -43,15 +39,25 @@ enum TaskSignalIcon {
         return path
     }
 
-    /// Waiting: the two bars of the pause sign, with round ends, in the middle of the ring.
-    static func pauseBarsPath(in rect: CGRect) -> CGPath {
+    /// Waiting: the checkbox's square (its border's centre line, as `drawCheckbox` draws it)…
+    static func boxPath(in rect: CGRect) -> CGPath {
         let unit = rect.width / 14
-        let width = 2 * unit, height = 6 * unit, gap = 2.2 * unit
+        return CGPath(roundedRect: rect.insetBy(dx: 0.65 * unit, dy: 0.65 * unit), cornerWidth: 2.5 * unit, cornerHeight: 2.5 * unit,
+                      transform: nil)
+    }
+
+    /// …and the five-pointed star in it, a hair below the middle (where a star looks centred).
+    static func starPath(in rect: CGRect) -> CGPath {
+        let unit = rect.width / 14
+        let center = CGPoint(x: rect.midX, y: rect.minY + 7.15 * unit), outer = 3.9 * unit, inner = outer * 0.46
         let path = CGMutablePath()
-        for x in [rect.midX - gap / 2 - width, rect.midX + gap / 2] {
-            path.addRoundedRect(in: CGRect(x: x, y: rect.midY - height / 2, width: width, height: height),
-                                cornerWidth: width / 2, cornerHeight: width / 2)
+        for i in 0..<10 {
+            // y points down: the first point is the top one.
+            let angle = -CGFloat.pi / 2 + CGFloat(i) * .pi / 5, radius = i % 2 == 0 ? outer : inner
+            let point = CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+            if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
+        path.closeSubpath()
         return path
     }
 
@@ -77,14 +83,17 @@ enum TaskSignalIcon {
         case .todo, .done:
             drawCheckbox(checked: state == .done, in: rect, theme: theme, ink: ink)
         case .waiting:
-            let width = pauseRingLineWidth(in: rect)
-            context.addPath(ringPath(in: rect, lineWidth: width))
+            let unit = rect.width / 14
             context.setStrokeColor(theme.waitingColor.cgColor)
-            context.setLineWidth(width)
-            context.strokePath()
-            context.addPath(pauseBarsPath(in: rect))
             context.setFillColor(theme.waitingColor.cgColor)
-            context.fillPath()
+            context.addPath(boxPath(in: rect))
+            context.setLineWidth(1.3 * unit) // the checkbox's border
+            context.strokePath()
+            // The star, filled and outlined with round corners, so that its points are not needle-sharp.
+            context.setLineJoin(.round)
+            context.setLineWidth(0.9 * unit)
+            context.addPath(starPath(in: rect))
+            context.drawPath(using: .fillStroke)
         case .doing:
             if ring != .arc { strokeRing() }
             if ring != .track {

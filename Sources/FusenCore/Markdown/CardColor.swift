@@ -45,6 +45,34 @@ enum CardColor: String, CaseIterable, Sendable {
     /// The title.
     var tagText: NSColor { Self.color(values.text) }
 
+    /// ダークモード: the tag has the color of Notion's dark tags (select options) of the color, the card is
+    /// that color at 30 % over a dark gray (a little lighter than the dark papers, so that the card stands
+    /// on them), and the title is light, of the tag's hue.
+    private var darkValues: (tag: UInt32, title: UInt32) {
+        switch self {
+        case .default: (0x464646, 0xEDEDED)
+        case .gray: (0x5A5A5A, 0xEDEDED)
+        case .brown: (0x603B2C, 0xF2DDD3)
+        case .orange: (0x854C1D, 0xF8DCC6)
+        case .yellow: (0x7D5A26, 0xF6E4C3) // a little darker than Notion's, for the title
+        case .green: (0x2B593F, 0xD3EEDD)
+        case .blue: (0x28456C, 0xD3E3F7)
+        case .purple: (0x492F64, 0xE6D8F5)
+        case .pink: (0x69314C, 0xF5D5E4)
+        case .red: (0x6E3630, 0xF7D6D2)
+        }
+    }
+
+    func frame(isDark: Bool) -> NSColor {
+        guard isDark else { return frame }
+        let tag = Self.color(darkValues.tag), base: CGFloat = 0x36 / 255
+        return NSColor(srgbRed: tag.redComponent * 0.3 + base * 0.7, green: tag.greenComponent * 0.3 + base * 0.7,
+                       blue: tag.blueComponent * 0.3 + base * 0.7, alpha: 1)
+    }
+
+    func tag(isDark: Bool) -> NSColor { isDark ? Self.color(darkValues.tag) : tag }
+    func tagText(isDark: Bool) -> NSColor { isDark ? Self.color(darkValues.title) : tagText }
+
     private static func color(_ hex: UInt32) -> NSColor {
         NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
                 blue: CGFloat(hex & 0xFF) / 255, alpha: 1)

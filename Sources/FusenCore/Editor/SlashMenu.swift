@@ -59,7 +59,7 @@ enum SlashCommand: String, CaseIterable, Sendable {
         case .bullet: ["bullet", "bulleted", "list", "ul", "かじょうがき", "りすと", "リスト"]
         case .ordered: ["number", "numbered", "ordered", "list", "ol", "ばんごう", "番号", "りすと", "リスト"]
         case .todo: ["todo", "to-do", "check", "task", "list", "ちぇっく", "チェック", "やること", "たすく", "タスク"]
-        case .waiting: ["waiting", "next", "pause", "task", "たいき", "待機", "つぎ", "次", "たすく", "タスク"]
+        case .waiting: ["waiting", "next", "star", "priority", "task", "たいき", "待機", "つぎ", "次", "ほし", "星", "ゆうせん", "優先", "たすく", "タスク"]
         case .doing: ["doing", "progress", "now", "task", "しんこう", "進行", "たすく", "タスク"]
         case .card: ["card", "callout", "かーど"]
         case .quote: ["quote", "blockquote", "いんよう"]

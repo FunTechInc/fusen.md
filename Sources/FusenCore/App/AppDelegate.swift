@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store: NoteStore
     private let history: HistoryStore
     private let styler = MarkdownStyler()
+    private let darkStyler = MarkdownStyler(theme: .dark)
     private var controllers: [UUID: NoteWindowController] = [:]
     private var historyWindow: HistoryWindowController?
     private var thinningTimer: Timer?
@@ -67,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSApp.terminate(nil)
             return
         }
+        AppAppearance.current.apply()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)
         store.onWriteError = { [weak self] url, error in self?.reportWriteError(url: url, error: error) }
         store.onWriteRecovered = { [weak self] in self?.didReportWriteError = false }
@@ -229,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @discardableResult
     private func open(_ meta: NoteMeta, body: String) -> NoteWindowController {
         let controller = NoteWindowController(meta: meta, body: body, store: store, history: history, styler: styler,
-                                              concealsMarkdown: !showsAllMarkdown)
+                                              darkStyler: darkStyler, concealsMarkdown: !showsAllMarkdown)
         controller.onClose = { [weak self] closed in self?.noteDidClose(closed) }
         controller.onShowHistory = { [weak self] note in self?.showHistory(selecting: note.meta.id) }
         controller.onImportFromNotion = { [weak self] note in self?.importFromNotion(note) }
@@ -286,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if historyWindow == nil {
             let model = HistoryModel(store: store, history: history)
             model.onRestore = { [weak self] id, text in self?.restoreFromHistory(id, text: text) }
-            historyWindow = HistoryWindowController(model: model, styler: styler)
+            historyWindow = HistoryWindowController(model: model, styler: styler, darkStyler: darkStyler)
         }
         historyWindow?.show(selecting: noteID)
     }

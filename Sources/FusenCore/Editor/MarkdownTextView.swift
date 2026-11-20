@@ -10,6 +10,23 @@ final class MarkdownTextView: NSTextView {
     }
 
     /// The caret is white on the darkened paper of 強調表示 (cards are darkened with it).
+    /// Called when the window's appearance (light or dark) changes.
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+
+    /// After the theme changed (light or dark): what is drawn with its colors outside the text.
+    func themeDidChange() {
+        guard let theme = (layoutManager as? ConcealingLayoutManager)?.theme else { return }
+        spinnerOverlay?.color = theme.doingColor
+        updateInsertionPointColor()
+        if slashMenu != nil { showSlashPanel() }
+        needsDisplay = true
+    }
+
     func updateInsertionPointColor() {
         guard let theme = (layoutManager as? ConcealingLayoutManager)?.theme else { return }
         let color = focus != nil ? theme.focusInk : theme.textColor
@@ -712,16 +729,21 @@ final class MarkdownTextView: NSTextView {
     /// paragraph's first character, whose style the paragraph takes: without the line's own style the
     /// text would jump out of the card while it is composed, and split the card in two. So in a card
     /// what is composed starts with the line's paragraph style and the card's marks.
+    /// Text being composed is not styled until it is committed, and a plain-text view does not take the
+    /// typing attributes from the text around the caret: they are set here, from the caret's line — its
+    /// font (a heading's size from the first keystroke, not the body's) and, in a card, the card's place.
+    /// What they were is put back when the next composition starts.
     private func prepareCompositionAttributes() {
-        let card = cardTypingAttributes()
-        if card.isEmpty {
-            guard let plain = plainTypingAttributes else { return }
+        if let plain = plainTypingAttributes {
             typingAttributes = plain
             plainTypingAttributes = nil
-        } else {
-            if plainTypingAttributes == nil { plainTypingAttributes = typingAttributes }
-            typingAttributes = typingAttributes.merging(card) { _, new in new }
         }
+        guard let storage = textStorage, let theme = (layoutManager as? ConcealingLayoutManager)?.theme else { return }
+        var attributes = typingAttributes.merging(cardTypingAttributes()) { _, new in new }
+        attributes[.font] = theme.font(for: ConcealedEditing.line(at: selectedRange().location, in: storage).kind)
+        attributes[.foregroundColor] = insertionPointColor // the text's color, or the light ink of 強調表示
+        plainTypingAttributes = typingAttributes
+        typingAttributes = attributes
     }
 
     // MARK: Formatting (書式), with Notion's shortcuts: ⌘B, ⌘I, ⇧⌘S, ⌘E, ⌘K
@@ -1012,10 +1034,10 @@ final class MarkdownTextView: NSTextView {
         return menu
     }
 
-    /// A color as its tag is drawn.
+    /// A color as its tag is drawn (in the menu's appearance: light or dark).
     static func swatch(_ color: CardColor) -> NSImage {
         NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
-            color.tag.setFill()
+            color.tag(isDark: NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .darkAqua).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
             return true
         }
