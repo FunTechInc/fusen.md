@@ -12,15 +12,16 @@ final class TestNote {
     var textView: MarkdownTextView { controller.textView }
     var window: NSWindow { controller.window! }
 
-    init(_ body: String, size: CGSize = CGSize(width: 280, height: 240), focus: NoteFocus? = nil) {
+    init(_ body: String, size: CGSize = CGSize(width: 280, height: 240), focus: NoteFocus? = nil, color: NoteColor = .yellow,
+         theme: MarkdownTheme = MarkdownTheme()) {
         store = NoteStore(rootURL: root)
         store.load()
-        var meta = NoteMeta(frame: CGRect(origin: CGPoint(x: 100, y: 100), size: size))
+        var meta = NoteMeta(frame: CGRect(origin: CGPoint(x: 100, y: 100), size: size), color: color)
         meta.focus = focus
         store.add(meta, body: body)
         controller = NoteWindowController(meta: meta, body: body, store: store,
                                           history: HistoryStore(rootURL: store.historyURL),
-                                          styler: MarkdownStyler(), concealsMarkdown: true)
+                                          styler: MarkdownStyler(theme: theme), concealsMarkdown: true)
     }
 
     /// The whole window as it would be drawn, title bar included: the paper, the visible text, the arcs
@@ -86,15 +87,16 @@ struct NoteFocusTests {
         #expect(e.storage.attribute(.foregroundColor, at: doing, effectiveRange: nil) as? NSColor == theme.focusInk)
         #expect(e.storage.attribute(.mdInk, at: doing, effectiveRange: nil) as? NSColor == theme.focusInk)
         #expect(e.storage.attribute(.mdFade, at: doing, effectiveRange: nil) == nil)
-        // Everything else: faded.
+        // Everything else: in the same light ink (the dark text color would vanish on the dark paper), fainter.
         for index in [0, waiting, e.index(of: "箇条書き"), e.index(of: "引用")] {
             #expect(e.storage.attribute(.mdFade, at: index, effectiveRange: nil) as? CGFloat == theme.focusFade, "\(index)")
-            #expect(abs(alpha(e.storage, index) - theme.focusFade) < 0.001, "\(index)")
-            #expect(e.storage.attribute(.mdInk, at: index, effectiveRange: nil) == nil, "\(index)")
+            #expect(e.storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor
+                    == theme.focusInk.withAlphaComponent(theme.focusFade), "\(index)")
+            #expect(e.storage.attribute(.mdInk, at: index, effectiveRange: nil) as? NSColor == theme.focusInk, "\(index)")
         }
         // The other emphasis.
         e.styler.restyle(e.storage, focus: .waiting)
-        #expect(e.storage.attribute(.mdInk, at: waiting, effectiveRange: nil) != nil)
+        #expect(e.storage.attribute(.mdFade, at: waiting, effectiveRange: nil) == nil)
         #expect(e.storage.attribute(.mdFade, at: doing, effectiveRange: nil) as? CGFloat == theme.focusFade)
         // Off: as always.
         e.styler.restyle(e.storage)
@@ -126,10 +128,9 @@ struct NoteFocusTests {
         let e = ConcealedEditor(nested)
         func lit(_ needle: String) -> Bool {
             let index = e.index(of: needle)
-            let isLit = e.storage.attribute(.mdInk, at: index, effectiveRange: nil) as? NSColor == theme.focusInk
-            // Lit or faded, never both and never neither.
-            #expect(isLit != (e.storage.attribute(.mdFade, at: index, effectiveRange: nil) != nil), "\(needle)")
-            return isLit
+            // Every line in the light ink; the ones that are not emphasized, fainter.
+            #expect(e.storage.attribute(.mdInk, at: index, effectiveRange: nil) as? NSColor == theme.focusInk, "\(needle)")
+            return e.storage.attribute(.mdFade, at: index, effectiveRange: nil) == nil
         }
         // In progress: the to-do and every line indented deeper than it that follows it — its items, their
         // items, text, across an empty line — up to the next line that is not.
@@ -203,7 +204,33 @@ struct NoteFocusTests {
         note.textView.insertText("本文", replacementRange: note.textView.selectedRange())
         let storage = note.textView.textStorage!
         #expect(storage.attribute(.mdFade, at: storage.length - 1, effectiveRange: nil) as? CGFloat == theme.focusFade)
-        #expect(storage.attribute(.mdInk, at: 8, effectiveRange: nil) != nil)
+        #expect(storage.attribute(.mdFade, at: 8, effectiveRange: nil) == nil)
+    }
+
+    @Test func onEveryPaperTheOtherLinesStayReadableAndTheEmphasizedOnesStandOut() throws {
+        // WCAG contrast: the lines that are not emphasized still readable (2.5:1 or more), the emphasized ones
+        // at least 13:1, five times the contrast of the others.
+        func luminance(_ c: NSColor) -> CGFloat {
+            func linear(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(c.redComponent) + 0.7152 * linear(c.greenComponent) + 0.0722 * linear(c.blueComponent)
+        }
+        func contrast(_ a: NSColor, _ b: NSColor) -> CGFloat {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        func over(_ ink: NSColor, _ paper: NSColor) throws -> NSColor {
+            let i = try #require(ink.usingColorSpace(.sRGB)), p = try #require(paper.usingColorSpace(.sRGB)), a = i.alphaComponent
+            return NSColor(srgbRed: i.redComponent * a + p.redComponent * (1 - a), green: i.greenComponent * a + p.greenComponent * (1 - a),
+                           blue: i.blueComponent * a + p.blueComponent * (1 - a), alpha: 1)
+        }
+        for color in NoteColor.allCases {
+            let paper = try #require(theme.focusPaper(color.background).usingColorSpace(.sRGB))
+            let lit = contrast(try over(theme.focusInk, paper), paper)
+            let other = contrast(try over(theme.focusInk.withAlphaComponent(theme.focusFade), paper), paper)
+            #expect(other >= 2.5, "\(color): \(other)")
+            #expect(lit >= 13, "\(color): \(lit)")
+            #expect(lit / other >= 5, "\(color): \(lit) / \(other)")
+        }
     }
 
     @Test func theButtonsAreOnlyOnNotesWithSignals() {

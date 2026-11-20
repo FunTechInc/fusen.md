@@ -171,7 +171,9 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                     let rect = lineFragmentRect(forGlyphAt: last, effectiveRange: nil)
                     let inset = container.lineFragmentPadding + blockInset(at: paragraph.location)
                     let line = NSRect(x: rect.minX + inset, y: rect.midY.rounded(.down), width: rect.width - 2 * inset, height: 1)
-                    tone(theme.dividerColor, at: paragraph.location).setFill()
+                    // The divider's faintness, of the paragraph's ink (white on the darkened paper of 強調表示).
+                    let ink = tone(at: paragraph.location)
+                    ink.withAlphaComponent(ink.alphaComponent * theme.dividerColor.alphaComponent).setFill()
                     line.offsetBy(dx: origin.x, dy: origin.y).fill()
                 }
             case .quote where concealsMarkdown:
@@ -380,12 +382,13 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             if card.titleIsEmpty, let tag = card.tags.first {
                 let font = theme.cardTitleFont
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: font, .foregroundColor: card.color.tagText.withAlphaComponent(0.45 * fade)]
+                    .font: font, .foregroundColor: (card.isShaded ? theme.focusInk : card.color.tagText).withAlphaComponent(0.45 * fade)]
                 let baseline = tag.midY + font.capHeight / 2 // like a title: its capitals in the middle of the tag
                 (theme.cardTitlePlaceholder as NSString).draw(
                     at: NSPoint(x: tag.minX + theme.cardTagPadding + origin.x, y: baseline - font.ascender + origin.y), withAttributes: attributes)
             }
-            theme.textColor.withAlphaComponent(theme.textColor.alphaComponent * fade).setFill()
+            let ink = card.isShaded ? theme.focusInk : theme.textColor // the dots, in the light ink on dark paper
+            ink.withAlphaComponent(ink.alphaComponent * fade).setFill()
             for i in 0..<3 {
                 let dot = NSRect(x: card.dots.minX + CGFloat(i) * theme.cardDotSpacing, y: card.dots.minY,
                                  width: theme.cardDotSize, height: theme.cardDotSize)

@@ -303,4 +303,22 @@ struct TaskStateTests {
         #expect(note.textView.spinnerOverlay?.rings.count == 1)  // the arc stays
         note.textView.unmarkText()
     }
+
+    @Test func inAQuoteAListOrToDoMarkerIsText() {
+        // As Notion has it (a quote is one block of text there), and as the note sends it.
+        let e = ConcealedEditor("> - [/] 確認\n> - 項目\n> 1. 番号")
+        for needle in ["- [/]", "- 項目", "1. 番号"] {
+            let index = e.index(of: needle)
+            #expect(e.storage.attribute(.mdTaskToggle, at: index, effectiveRange: nil) == nil, "\(needle)")
+            #expect(e.storage.attribute(.mdConcealBox, at: index, effectiveRange: nil) == nil, "\(needle)")
+            #expect(e.storage.attribute(.mdMarker, at: index, effectiveRange: nil) == nil, "\(needle)")
+            #expect(ConcealedEditing.line(at: index, in: e.storage).kind == .quote, "\(needle)")
+        }
+        #expect(MarkdownStyler.taskStates(in: e.storage).isEmpty)
+        // "[]" typed in a quote stays as typed.
+        let typed = ConcealedEditor("> ")
+        typed.click(2)
+        typed.type("[]")
+        #expect(typed.text == "> []")
+    }
 }
