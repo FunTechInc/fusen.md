@@ -125,7 +125,7 @@ struct NotionPage: Decodable, Sendable, Equatable {
     }
 }
 
-/// GET /v1/pages/{id}/markdown: a page's content as Notion-flavored Markdown.
+/// GET /v1/pages/{id}/markdown: a page's content as Notion-flavored Markdown (`markdown_version` v2).
 struct NotionPageMarkdown: Decodable, Sendable, Equatable {
     let markdown: String
     /// Notion stopped part-way through a very long page.
@@ -150,6 +150,26 @@ struct NotionPageMarkdown: Decodable, Sendable, Equatable {
         case markdown, truncated
         case unknownBlockIDs = "unknown_block_ids"
     }
+}
+
+/// The `warnings` of an update (PATCH /v1/pages/{id}/markdown): what Notion's parser changed or ignored
+/// in the Markdown it was sent — `unsupported_tag`, `deprecated_tag`, `html_tag_autofix`. The update was
+/// still saved. Only the codes are read: a message may quote the note.
+struct NotionMarkdownWarnings: Decodable, Sendable {
+    let codes: [String]
+
+    init(from decoder: Decoder) throws {
+        struct Warning: Decodable { let code: String? }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        codes = ((try? c.decodeIfPresent([Warning].self, forKey: .warnings)) ?? []).compactMap(\.code)
+    }
+
+    /// The warning codes in the body of a response, none if it has none (or is not what was expected).
+    static func codes(in data: Data) -> [String] {
+        (try? JSONDecoder().decode(NotionMarkdownWarnings.self, from: data))?.codes ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey { case warnings }
 }
 
 struct NotionDatabase: Decodable, Sendable, Equatable {
@@ -329,12 +349,13 @@ protocol NotionAPI: Sendable {
     /// POST /v1/databases under a page, with the schema of its initial data source.
     func createDatabase(parentPageID: String, title: String,
                         properties: [String: NotionPropertySchema]) async throws -> NotionDatabase
-    /// POST /v1/pages in a data source, with properties and Notion-flavored Markdown content.
+    /// POST /v1/pages in a data source, with properties and Notion-flavored Markdown (v2) content.
     func createPage(dataSourceID: String, properties: [String: NotionPropertyValue],
                     markdown: String) async throws -> NotionPage
-    /// GET /v1/pages/{id}/markdown — a page's content (for 「Notion の内容を取り込む」).
+    /// GET /v1/pages/{id}/markdown — a page's content as Notion-flavored Markdown (v2), for
+    /// 「Notion の内容を取り込む」.
     func retrieveMarkdown(pageID: String) async throws -> NotionPageMarkdown
-    /// PATCH /v1/pages/{id}/markdown with `replace_content`.
+    /// PATCH /v1/pages/{id}/markdown with `replace_content`; the Markdown is Notion-flavored (v2).
     func replaceContent(pageID: String, markdown: String) async throws
     /// PATCH /v1/pages/{id} with property values.
     func updateProperties(pageID: String, properties: [String: NotionPropertyValue]) async throws
@@ -353,10 +374,17 @@ protocol NotionAPI: Sendable {
 /// (`NotionError.server(committedResourceID:)`). 400/401/403/404 are never retried. The request
 /// timeout is longer than Notion's own 60 s limit, so Notion's 503 (with its guidance) arrives first.
 ///
+/// Markdown is sent and read as Notion-flavored Markdown: every request that carries or returns it
+/// names `markdown_version` "v2". (Without it, this API version still means the deprecated "enhanced
+/// markdown", v1; the next API version makes v2 the default and refuses v1. See
+/// guides/data-apis/working-with-markdown-content#markdown-versions.)
+///
 /// The token is only ever put in the Authorization header. It is never logged, and errors never
 /// include the request.
 actor NotionClient: NotionAPI {
     static let apiVersion = "2026-03-11"
+    /// The Markdown syntax NotionMarkdown writes and reads.
+    static let markdownVersion = "v2"
     static let defaultBaseURL = URL(string: "https://api.notion.com")!
 
     private let token: String
@@ -433,21 +461,32 @@ actor NotionClient: NotionAPI {
             "parent": .object(["type": .string("data_source_id"), "data_source_id": .string(dataSourceID)]),
             "properties": .object(properties.mapValues(\.json)),
             "markdown": .string(markdown),
+            "markdown_version": .string(Self.markdownVersion), // a body parameter, next to `markdown`
         ])
         return try decode(NotionPage.self, from: await send("POST", "v1/pages", body: body, idempotent: false))
     }
 
     func retrieveMarkdown(pageID: String) async throws -> NotionPageMarkdown {
-        try decode(NotionPageMarkdown.self, from: await send("GET", "v1/pages/\(pageID)/markdown", idempotent: true))
+        // On a GET the version is a query parameter; the answer is written in that version.
+        let query = [URLQueryItem(name: "markdown_version", value: Self.markdownVersion)]
+        return try decode(NotionPageMarkdown.self,
+                          from: await send("GET", "v1/pages/\(pageID)/markdown", query: query, idempotent: true))
     }
 
     func replaceContent(pageID: String, markdown: String) async throws {
         let body: JSONValue = .object([
+            "markdown_version": .string(Self.markdownVersion), // at the top level of the body
             "type": .string("replace_content"),
             "replace_content": .object(["new_str": .string(markdown)]),
         ])
         // Replacing the whole content with the same text twice gives the same page.
-        _ = try await send("PATCH", "v1/pages/\(pageID)/markdown", body: body, idempotent: true)
+        let data = try await send("PATCH", "v1/pages/\(pageID)/markdown", body: body, idempotent: true)
+        // Notion saved the page but changed or ignored some of the Markdown: worth knowing, as it means
+        // the page may not show what the note shows. Only the kinds of warning are logged, never text.
+        let warnings = NotionMarkdownWarnings.codes(in: data)
+        if !warnings.isEmpty {
+            NSLog("fusen.md: Notion changed or ignored part of a note's Markdown (%@)", warnings.joined(separator: ", "))
+        }
     }
 
     func updateProperties(pageID: String, properties: [String: NotionPropertyValue]) async throws {

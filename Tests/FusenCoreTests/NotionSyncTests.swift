@@ -224,7 +224,7 @@ struct NotionSyncTests {
         let id = await pushedNote("# 買い物\n- [ ] 牛乳")
         #expect(sync.canImport(id))
         api.remoteMarkdown["page-1"] = NotionPageMarkdown(
-            markdown: "# 買い物\n- [x] 牛乳\n- [ ] パン\n<empty-block/>\n> 一行目<br>二行目\n価格は\\$5")
+            markdown: "# 買い物\n\n- [x] 牛乳\n- [ ] パン\n\n<p />\n\n> 一行目<br />二行目\n\n価格は\\$5")
         let result = try await sync.fetchImport(id)
         #expect(result.text == "# 買い物\n- [x] 牛乳\n- [ ] パン\n\n> 一行目\n> 二行目\n価格は$5")
         #expect(result.notionOnly.isEmpty)
@@ -236,14 +236,17 @@ struct NotionSyncTests {
         let id = await pushedNote("メモ")
         api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: """
         <callout icon="💡" color="yellow_bg">
-        \t大事
+        大事
         </callout>
-        <details>
-        <summary>トグル</summary>
-        </details>
+
+        <toggle>
+        トグル
+        </toggle>
+
         <span color="red">赤い字</span>
+
         ```
-        <details> in code is not a toggle
+        <toggle> in code is not a toggle
         ```
         """)
         let result = try await sync.fetchImport(id)
@@ -320,10 +323,15 @@ struct NotionSyncTests {
         } catch {
             #expect(error.message.contains("読み込み"))
         }
-        // A bookmark Notion cannot express comes back as a tag, reported, not refused.
-        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: #"メモ\n<unknown alt="bookmark"/>"#)
+        // A block Notion cannot express in Markdown (a link preview) comes back as a tag, reported, not
+        // refused; so does a bookmark, which has a tag of its own.
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(
+            markdown: "メモ\n\n<unknown url=\"https://www.notion.so/p#b\" alt=\"link_preview\" />")
         let result = try await sync.fetchImport(id)
         #expect(result.notionOnly == ["取得できなかったブロック"])
+        #expect(result.text == "メモ\n<unknown url=\"https://www.notion.so/p#b\" alt=\"link_preview\" />")
+        api.remoteMarkdown["page-1"] = NotionPageMarkdown(markdown: "メモ\n\n<bookmark source=\"https://example.com\" />")
+        #expect(try await sync.fetchImport(id).notionOnly == ["ブックマーク・埋め込み"])
     }
 
     // MARK: Connecting
@@ -524,7 +532,7 @@ struct NotionSyncTests {
         let id = await pushedNote("v1")
         await edit(id, "# v2 の見出し\n- [ ] $5 の買い物")
         #expect(api.calls == [
-            .replace(page: "page-1", markdown: "# v2 の見出し\n- [ ] \\$5 の買い物"),
+            .replace(page: "page-1", markdown: "# v2 の見出し\n\n- [ ] \\$5 の買い物"),
             .update(page: "page-1", properties: ["名前": .title("v2 の見出し"), "更新日時": .date(store.meta(id)!.modified),
                                                  "状態": .select("使用中"), "色": .select("イエロー")]),
         ])

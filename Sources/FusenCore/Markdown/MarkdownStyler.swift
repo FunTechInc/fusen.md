@@ -838,7 +838,8 @@ final class MarkdownStyler {
 
     /// Only characters that are syntax in this app: "\\{", "\\%", "\\\"" typed in a note stay as typed.
     private static let escapable = Set("\\`*_~[]()#+-.>!".utf16)
-    private static func isEscapable(_ c: unichar) -> Bool { escapable.contains(c) }
+    /// (Also asked by the import from Notion: a backslash before any other character would be shown.)
+    static func isEscapable(_ c: unichar) -> Bool { escapable.contains(c) }
 
     private func isFree(_ range: NSRange, _ claimed: [NSRange]) -> Bool {
         !claimed.contains { NSIntersectionRange($0, range).length > 0 }

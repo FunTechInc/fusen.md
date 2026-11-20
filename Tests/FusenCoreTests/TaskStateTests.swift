@@ -204,9 +204,20 @@ struct TaskStateTests {
     }
 
     @Test func notionGetsSignalsAsUncheckedToDosInTheirColors() {
+        // In Notion's Markdown a color is an attribute of the to-do's tag; the other to-dos stay "- [ ]".
         let styler = MarkdownStyler()
-        #expect(NotionMarkdown.export("- [/] 進行中\n- [>] 待機\n- [x] 完了\n- [ ] 未着手", styler: styler)
-                == "- [ ] 進行中 {color=\"blue\"}\n- [ ] 待機 {color=\"orange\"}\n- [x] 完了\n- [ ] 未着手")
+        #expect(NotionMarkdown.export("- [/] 進行中\n- [>] 待機\n- [x] 完了\n- [ ] 未着手", styler: styler) == """
+        <todo checked="false" color="blue">
+        進行中
+        </todo>
+
+        <todo checked="false" color="orange">
+        待機
+        </todo>
+
+        - [x] 完了
+        - [ ] 未着手
+        """)
     }
 
     // MARK: Drawing

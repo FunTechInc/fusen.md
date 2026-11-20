@@ -134,6 +134,7 @@ struct NotionClientTests {
         let create = try #require(requests[0].body)
         #expect((create["parent"] as? [String: String]) == ["type": "data_source_id", "data_source_id": "ds"])
         #expect(create["markdown"] as? String == "# 見出し\n- [ ] \\$5")
+        #expect(create["markdown_version"] as? String == "v2") // next to `markdown`
         let properties = try #require(create["properties"] as? [String: Any])
         let title = (properties["名前"] as? [String: Any])?["title"] as? [[String: Any]]
         #expect((title?.first?["text"] as? [String: String]) == ["content": "見出し"])
@@ -142,6 +143,13 @@ struct NotionClientTests {
         let replace = try #require(requests[1].body)
         #expect(replace["type"] as? String == "replace_content")
         #expect((replace["replace_content"] as? [String: String]) == ["new_str": "新しい本文"])
+        #expect(replace["markdown_version"] as? String == "v2") // at the top level, not in the command
+        #expect(Set(replace.keys) == ["type", "replace_content", "markdown_version"])
+
+        // The requests that neither carry nor return Markdown do not name a version (Notion refuses
+        // `markdown_version` without `markdown`).
+        #expect(requests[2].body?["markdown_version"] == nil)
+        #expect(requests[3].body?["markdown_version"] == nil)
 
         let query = try #require(requests[2].body)
         let filter = query["filter"] as? [String: Any]
@@ -168,7 +176,33 @@ struct NotionClientTests {
         #expect(second == NotionPageMarkdown(markdown: "本文"))
         #expect(server.requests.map(\.method) == ["GET", "GET"])
         #expect(server.requests.map(\.path) == ["/v1/pages/p1/markdown", "/v1/pages/p2/markdown"])
+        // On a GET the Markdown version is a query parameter; the API version is the same as before.
+        #expect(server.requests.map(\.query) == ["markdown_version=v2", "markdown_version=v2"])
         #expect(server.requests.first?.headers["Notion-Version"] == "2026-03-11")
+    }
+
+    @Test func aReplaceThatNotionAnswersWithWarningsStillSucceeds() async throws {
+        // Notion saved the page, but its parser changed or ignored some of the Markdown.
+        let body = ##"{"object":"page_markdown","id":"p1","markdown":"x","truncated":false,"unknown_block_ids":[],"warnings":[{"code":"unsupported_tag","message":"<foo> was saved as text"},{"code":"deprecated_tag","message":"m"}]}"##
+        let server = StubServer([.init(status: 200, body: body), .init(status: 200, body: "not json")])
+        let api = client(server)
+        try await api.replaceContent(pageID: "p1", markdown: "本文")
+        try await api.replaceContent(pageID: "p1", markdown: "本文") // an answer it cannot read is no failure either
+        #expect(server.requests.count == 2)
+        // Only the kinds of warning are read (a message may quote the note).
+        #expect(NotionMarkdownWarnings.codes(in: Data(body.utf8)) == ["unsupported_tag", "deprecated_tag"])
+        #expect(NotionMarkdownWarnings.codes(in: Data(#"{"object":"page_markdown","id":"p1","markdown":"x"}"#.utf8)).isEmpty)
+        #expect(NotionMarkdownWarnings.codes(in: Data("not json".utf8)).isEmpty)
+    }
+
+    @Test func aNoteNotionCannotParseIsAValidationError() async {
+        // What the older format saved as literal text, this one refuses: 400, never retried.
+        let server = StubServer([.init(status: 400, body: #"{"object":"error","status":400,"code":"validation_error","message":"Markdown errors blocked parsing: an image must be its own block"}"#),
+                                 .init(status: 200)])
+        await #expect(throws: NotionError.validation(message: "Markdown errors blocked parsing: an image must be its own block")) {
+            try await client(server).replaceContent(pageID: "p1", markdown: "x")
+        }
+        #expect(server.requests.count == 1)
     }
 
     @Test func rateLimitWaitsForRetryAfterThenRetries() async throws {
