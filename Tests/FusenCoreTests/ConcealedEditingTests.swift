@@ -723,4 +723,45 @@ struct ConcealedEditingTests {
         if e.storage.attribute(.obliqueness, at: i, effectiveRange: nil) != nil { styles.insert("italic") }
         return styles
     }
+
+    // MARK: Found in review (2026-11-20)
+
+    @Test func controlDeleteAtTheVeryStartDoesNothing() {
+        let e = ConcealedEditor("abc")
+        e.click(0)
+        e.key { e.textView.deleteBackwardByDecomposingPreviousCharacter(nil) } // ⌃⌫: was out of bounds
+        #expect(e.text == "abc" && e.caret == 0)
+        let after = ConcealedEditor("abc")
+        after.click(2)
+        after.key { after.textView.deleteBackwardByDecomposingPreviousCharacter(nil) }
+        #expect(after.text == "ac")
+    }
+
+    @Test func retypingALinksTextSelectedWithShiftArrowKeepsTheLink() {
+        // Shift-→ from before "猫" selects it together with the hidden "[" before it; Shift-← from after
+        // it, together with the hidden "](…)" after it. Either way what is typed replaces the text only.
+        let right = ConcealedEditor("前[猫](https://example.com)後")
+        right.click(0)
+        right.key { right.textView.moveRight(nil) }
+        right.key { right.textView.moveRightAndModifySelection(nil) }
+        right.type("犬")
+        #expect(right.text == "前[犬](https://example.com)後")
+        let left = ConcealedEditor("前[猫](https://example.com)後")
+        left.click((left.text as NSString).length - 1)
+        left.key { left.textView.moveLeftAndModifySelection(nil) }
+        left.type("犬")
+        #expect(left.text == "前[犬](https://example.com)後")
+        // Bold the same way; and a selection reaching past the span still replaces it all.
+        let bold = ConcealedEditor("前**太字**後")
+        bold.click(0)
+        bold.key { bold.textView.moveRight(nil) }
+        bold.key { bold.textView.moveRightAndModifySelection(nil) }
+        bold.key { bold.textView.moveRightAndModifySelection(nil) }
+        bold.type("細")
+        #expect(bold.text == "前**細**後")
+        let past = ConcealedEditor("前**太字**後")
+        past.textView.setSelectedRange(NSRange(location: 0, length: (past.text as NSString).length))
+        past.type("新")
+        #expect(past.text == "新")
+    }
 }

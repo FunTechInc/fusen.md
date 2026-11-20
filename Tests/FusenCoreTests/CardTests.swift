@@ -643,4 +643,77 @@ struct CardTests {
             try e.png()?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("cards-revealed.png"))
         }
     }
+
+    // MARK: Found in review (2026-11-20)
+
+    @Test func deletingASelectedCardKeepsTheBlockAfterIt() {
+        // Selected from its title to the end of its text, the selection takes the whole card, line break and
+        // all: the to-do after it stays a to-do.
+        let e = ConcealedEditor(":::card blue A\n本文\n:::\n- [>] 返信")
+        e.textView.setSelectedRange(NSRange(location: e.index(of: "A\n"), length: 3))
+        e.key { e.textView.deleteBackward(nil) }
+        #expect(e.text == "- [>] 返信")
+        // Whole lines of text likewise; joining part of a line to the next still drops the next one's marker.
+        let lines = ConcealedEditor("- 一\n- 二")
+        lines.textView.setSelectedRange(NSRange(location: 0, length: 4))
+        lines.key { lines.textView.deleteBackward(nil) }
+        #expect(lines.text == "- 二")
+        let join = ConcealedEditor("- 一\n- 二")
+        join.textView.setSelectedRange(NSRange(location: 2, length: 2))
+        join.key { join.textView.deleteBackward(nil) }
+        #expect(join.text == "- 二")
+        #expect(join.caret == 2)
+    }
+
+    @Test func typingOverASelectedCardDoesNotTypeIntoTheNextOne() {
+        let e = ConcealedEditor(":::card blue A\n本文\n:::\n:::card red B\n二\n:::")
+        e.textView.setSelectedRange(NSRange(location: e.index(of: "A\n"), length: 3))
+        e.type("X")
+        #expect(e.text == "X\n:::card red B\n二\n:::")
+        #expect(e.caret == 1)
+        e.undo.undo()
+        #expect(e.text == ":::card blue A\n本文\n:::\n:::card red B\n二\n:::")
+    }
+
+    @Test func theSelectionShowsOnACard() throws {
+        let note = TestNote(":::card orange A\n本文です本文です\n:::\n外の文です外の文", size: CGSize(width: 280, height: 220))
+        note.window.makeFirstResponder(note.textView)
+        let layout = try #require(note.textView.layoutManager as? ConcealingLayoutManager)
+        let ns = note.textView.string as NSString
+        let bounds = note.textView.bounds
+        func color(selecting needle: String) throws -> (selected: NSColor, beside: NSColor) {
+            let range = ns.range(of: needle)
+            note.textView.setSelectedRange(range)
+            let rect = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil),
+                                           in: note.textView.textContainer!)
+            let rep = try #require(note.textView.bitmapImageRepForCachingDisplay(in: bounds))
+            note.textView.cacheDisplay(in: bounds, to: rep)
+            let scale = CGFloat(rep.pixelsWide) / bounds.width, origin = note.textView.textContainerOrigin
+            func at(_ x: CGFloat, _ y: CGFloat) throws -> NSColor {
+                try #require(rep.colorAt(x: Int((origin.x + x) * scale), y: Int((origin.y + y) * scale))?.usingColorSpace(.sRGB))
+            }
+            // The corner of the selection (no glyph there), and the card (or paper) right of it.
+            return (try at(rect.minX + 1.5, rect.minY + 1.5), try at(rect.maxX + 30, rect.minY + 1.5))
+        }
+        func differs(_ a: NSColor, _ b: NSColor) -> Bool {
+            abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent) + abs(a.blueComponent - b.blueComponent) > 0.05
+        }
+        let inCard = try color(selecting: "本文です")
+        #expect(differs(inCard.selected, inCard.beside))
+        #expect(!differs(inCard.beside, CardColor.orange.frame))
+    }
+
+    @Test func aCardAtTheVeryStartHasTheSpaceAboveItsTitleToo() throws {
+        // TextKit gives the first paragraph of a text no space before it; the card makes up for it.
+        for text in [":::card orange A\n本文\n:::", "前\n:::card orange A\n本文\n:::"] {
+            let e = ConcealedEditor(text)
+            let card = try #require(e.layoutManager.cardGeometries().first)
+            let tag = try #require(card.tags.first)
+            #expect(abs(tag.minY - card.frame.minY - theme.cardPaddingTop) < 1.5, "\(text.debugDescription)")
+            #expect(abs(card.frame.minY - e.layoutManager.lineFragmentRect(
+                forGlyphAt: e.layoutManager.glyphIndexForCharacter(at: e.index(of: ":::card")), effectiveRange: nil).minY - theme.cardGap) < 0.5)
+        }
+        let note = TestNote(":::card orange A\n本文\n:::\nおわり")
+        try note.write("card-at-the-start")
+    }
 }

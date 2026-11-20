@@ -64,6 +64,13 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func setConcealsMarkdown(_ conceals: Bool) {
         layoutManager.concealsMarkdown = conceals
         textView.concealsMarkdown = conceals
+        // The caret may be in syntax that is hidden now (in a link's URL, after ⇧⌘M to edit it): it goes
+        // where it can be seen, as after any move, so that what is typed next is not typed where it can't.
+        // (Text being composed is left alone, and the caret placed once it is committed.)
+        guard conceals, !textView.hasMarkedText(), let storage = textView.textStorage else { return }
+        let ranges = textView.selectedRanges
+        let adjusted = Self.adjusted(ranges, from: ranges, in: storage)
+        if adjusted != ranges { textView.selectedRanges = adjusted }
     }
 
     @available(*, unavailable)

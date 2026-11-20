@@ -76,7 +76,8 @@ enum ConcealedEditing {
     /// divider counts as visible).
     static func onlySyntax(between a: Int, and b: Int, in s: NSTextStorage) -> Bool {
         (min(a, b)..<max(a, b)).allSatisfy { i in
-            isHidden(i, in: s) || (s.attribute(.mdBlockPrefix, at: i, effectiveRange: nil) != nil
+            guard i >= 0, i < s.length else { return false }
+            return isHidden(i, in: s) || (s.attribute(.mdBlockPrefix, at: i, effectiveRange: nil) != nil
                                    && s.attribute(.mdLine, at: i, effectiveRange: nil) as? String != MarkdownLine.rule.rawValue)
         }
     }
@@ -487,10 +488,20 @@ enum ConcealedEditing {
     static func deletion(of r: NSRange, in s: NSTextStorage, replacing: Bool = false) -> Edit {
         guard r.length > 0 else { return Edit(range: r, string: "", caret: r.location) }
         var r = r
+        if replacing {
+            // What is selected is what shows: hidden syntax at the ends of the selection (an arrow key
+            // that selects "猫" in "[猫](url)" takes the "[" with it) does not decide what is replaced.
+            var start = r.location, end = NSMaxRange(r)
+            while start < end, isHidden(start, in: s), !isEscapeBackslash(start, in: s) { start += 1 }
+            while end > start, isHidden(end - 1, in: s) { end -= 1 }
+            if end > start { r = NSRange(location: start, length: end - start) }
+        }
         let next = line(at: NSMaxRange(r), in: s)
-        // (Not a card: the syntax of its opening line is half of it, and stays.)
+        // The block after the deletion joins the line it starts on — if something of that line stays: whole
+        // lines (a whole card) go, and the block after them stays as it is. (Not a card: the syntax of its
+        // opening line is half of it, and stays.)
         if !replacing, NSMaxRange(r) == next.range.location, next.range.location > 0, let prefix = next.prefix,
-           !next.kind.isCardStructure {
+           !next.kind.isCardStructure, r.location > line(at: r.location, in: s).range.location {
             r = NSUnionRange(r, prefix)
         }
         var deleted = IndexSet(integersIn: r.location..<NSMaxRange(r))

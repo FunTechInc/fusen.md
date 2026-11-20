@@ -104,7 +104,7 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     /// The lines around a row of cards show nothing when the Markdown is concealed: they take no height.
     /// A card's closing line is only the space under its text then; with the Markdown shown it gets the
-    /// room its ":::" needs to stand inside the card.
+    /// room its ":::" needs to stand inside the card. A card at the very start keeps the space above it.
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
@@ -117,6 +117,18 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             lineFragmentUsedRect.pointee.size.height = 0
             baselineOffset.pointee = 0
             return true
+        }
+        // TextKit leaves out the space before the first paragraph of the text: a card that the note starts
+        // with would lose the top of its frame, and its title would stick out above it.
+        if kind == .cardOpen, character == 0,
+           let style = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
+            let missing = style.paragraphSpacingBefore - (lineFragmentUsedRect.pointee.minY - lineFragmentRect.pointee.minY)
+            if missing > 0.5 {
+                lineFragmentRect.pointee.size.height += missing
+                lineFragmentUsedRect.pointee.origin.y += missing
+                baselineOffset.pointee += missing
+                return true
+            }
         }
         if !concealsMarkdown, kind == .cardClose {
             let room = (theme.fontSize * 0.7).rounded()
@@ -131,11 +143,13 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     // MARK: Drawing
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        // The cards first: they are opaque, and TextKit draws the selection (and the background of text
+        // being composed) here, which has to show on them.
+        let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        drawCards(in: characters, at: origin)
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         guard let storage = textStorage, let container = textContainers.first else { return }
-        let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         var codeRects: [(rect: NSRect, fade: CGFloat)] = []
-        drawCards(in: characters, at: origin)
 
         storage.enumerateAttribute(.mdLine, in: characters) { value, run, _ in
             guard let kind = (value as? String).flatMap(MarkdownLine.init) else { return }
@@ -220,9 +234,8 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             guard value != nil, isConcealed(at: run.location) else { return }
             let box = boxRect(forCharacterAt: run.location, in: container)
             let glyph = glyphIndexForCharacter(at: run.location)
-            if let check = storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) as? Int,
-               check < storage.length {
-                let state = TaskState(character: (storage.string as NSString).character(at: check)) ?? .todo
+            if storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) != nil {
+                let state = MarkdownStyler.taskState(at: run.location, in: storage) ?? .todo
                 guard let rect = taskIconRect(forCharacterAt: run.location) else { return }
                 // An arc that turns is the text view's (see TaskSpinnerOverlay): here only the track under it.
                 TaskSignalIcon.draw(state, in: rect.offsetBy(dx: origin.x, dy: origin.y), theme: theme,

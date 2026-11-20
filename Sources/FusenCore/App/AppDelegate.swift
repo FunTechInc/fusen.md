@@ -82,11 +82,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         } else if notes.isEmpty {
             createNote(body: "")
         }
+        var unreadable = 0
         for meta in notes {
+            // A file that is there but cannot be read is not an empty note: shown empty, it would be
+            // overwritten by what is typed, or removed when it is closed. It stays as it is, closed.
+            guard store.fileText(of: meta.id) != .unreadable else {
+                NSLog("fusen.md: note %@ cannot be read; not opened", meta.id.uuidString)
+                unreadable += 1
+                continue
+            }
             let body = store.body(of: meta.id)
             history.checkpoint(meta.id, text: body, reason: .launch)
             open(meta, body: body)
         }
+        if unreadable > 0 { reportUnreadableNotes(unreadable) }
         thinningTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.history.thin() }
         }
@@ -236,13 +245,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let id = controller.meta.id
         let text = controller.currentText // what is on screen, not a re-read of the file
         controllers[id] = nil
-        if text.allSatisfy(\.isWhitespace), !history.hasSnapshots(id) {
+        // (A note that shows nothing but whose file holds text — written by another app since it opened,
+        // or not readable — goes to 削除したメモ too.)
+        if text.allSatisfy(\.isWhitespace), !history.hasSnapshots(id), !store.fileHoldsText(id) {
             store.remove(id) // never had any content: nothing to keep
         } else {
             history.checkpoint(id, text: text, reason: .deleted)
             store.markDeleted(id)
         }
         reloadHistoryIfVisible()
+    }
+
+    private func reportUnreadableNotes(_ count: Int) {
+        DispatchQueue.main.async { [store] in
+            let alert = NSAlert()
+            alert.messageText = "\(count) 件のメモを読み込めませんでした"
+            alert.informativeText = "ファイルはそのまま残してあり、開いていません。読み込めるようになると、次に起動したときに開きます。\n\n場所: \(store.notesURL.path)"
+            alert.runModal()
+        }
     }
 
     @objc func reopenLastClosedNote(_ sender: Any?) {

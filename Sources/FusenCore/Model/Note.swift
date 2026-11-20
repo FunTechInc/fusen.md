@@ -81,7 +81,7 @@ struct NoteMeta: Codable, Identifiable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         frame = try c.decode(CGRect.self, forKey: .frame)
-        color = try c.decodeIfPresent(NoteColor.self, forKey: .color) ?? .yellow
+        color = (try? c.decodeIfPresent(NoteColor.self, forKey: .color)) ?? .yellow // an unknown color too
         isFloating = try c.decodeIfPresent(Bool.self, forKey: .isFloating) ?? false
         isTranslucent = try c.decodeIfPresent(Bool.self, forKey: .isTranslucent) ?? false
         isOnAllSpaces = try c.decodeIfPresent(Bool.self, forKey: .isOnAllSpaces) ?? true

@@ -221,6 +221,74 @@ struct NoteStoreTests {
             .filter { $0.hasPrefix("index-unreadable-") }
         #expect(copies.count == 1)
     }
+
+    // MARK: Found in review (2026-11-20)
+
+    @Test func movingAWindowDoesNotSetTheTimeOfTheTextBack() throws {
+        let store = NoteStore(rootURL: root)
+        store.load()
+        var meta = NoteMeta(frame: .zero, created: Date(timeIntervalSince1970: 1_000))
+        store.add(meta, body: "昨日のメモ")
+        store.updateBody("今日書き足した", for: meta.id)
+        let edited = try #require(store.meta(meta.id)?.modified)
+        #expect(edited > meta.modified)
+        meta.frame = CGRect(x: 50, y: 50, width: 280, height: 240) // the window's copy, from before the edit
+        store.updateMeta(meta)
+        #expect(store.meta(meta.id)?.frame == meta.frame)
+        #expect(store.meta(meta.id)?.modified == edited)
+    }
+
+    @Test func anIndexEntryThatCannotBeReadLeavesTheOthersAsTheyWere() throws {
+        let store = NoteStore(rootURL: root)
+        store.load()
+        let open = NoteMeta(frame: CGRect(x: 1, y: 2, width: 280, height: 240), color: .pink)
+        let deleted = NoteMeta(frame: .zero)
+        let odd = NoteMeta(frame: .zero)
+        store.add(open, body: "開いている")
+        store.add(deleted, body: "削除した")
+        store.add(odd, body: "色が不明")
+        store.markDeleted(deleted.id)
+        store.flush()
+        // A color this version does not know (a later version's), and an entry that is not a note at all.
+        let url = root.appendingPathComponent("index.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var notes = try #require(json["notes"] as? [[String: Any]])
+        let i = try #require(notes.firstIndex { $0["id"] as? String == odd.id.uuidString })
+        notes[i]["color"] = "red"
+        notes.append(["id": "not-a-uuid"])
+        json["notes"] = notes
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        let reloaded = NoteStore(rootURL: root)
+        reloaded.load()
+        #expect(reloaded.meta(deleted.id)?.isDeleted == true)                 // still in the trash
+        #expect(reloaded.meta(open.id)?.color == .pink)
+        #expect(reloaded.meta(odd.id)?.color == .yellow)                      // only the unknown value is reset
+        #expect(reloaded.metas.count == 3)
+        let copies = try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix("index-partly-unreadable-") }
+        #expect(copies.count == 1)
+    }
+
+    @Test func whatIsInANotesFileIsToldApart() throws {
+        let store = NoteStore(rootURL: root)
+        store.load()
+        let meta = NoteMeta(frame: .zero)
+        store.add(meta, body: "")
+        store.flush()
+        let url = store.bodyURL(for: meta.id)
+        #expect(store.fileText(of: meta.id) == .text(""))
+        #expect(!store.fileHoldsText(meta.id))
+        try Data("議事録".utf8).write(to: url)                                 // written by another app
+        #expect(store.fileHoldsText(meta.id))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+        #expect(store.fileText(of: meta.id) == .unreadable)
+        #expect(store.fileHoldsText(meta.id))
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        try FileManager.default.removeItem(at: url)
+        #expect(store.fileText(of: meta.id) == .missing)
+        #expect(!store.fileHoldsText(meta.id))
+    }
 }
 
 @MainActor
