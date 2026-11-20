@@ -191,7 +191,13 @@ struct CardDragTests {
         #expect(note.textView.cardCursor(at: handle(geometry)) == .openHand)
         #expect(note.textView.cardCursor(at: NSPoint(x: geometry.tags[0].midX, y: geometry.tags[0].midY)) == .openHand)
         #expect(note.textView.cardCursor(at: NSPoint(x: geometry.dots.midX, y: geometry.dots.midY)) == .pointingHand)
-        #expect(note.textView.cardCursor(at: NSPoint(x: geometry.panel!.midX, y: geometry.panel!.midY)) == nil)
+        // On its lines of text the pointer is the text's; around them — beside, below — it holds the card.
+        let content = geometry.content!
+        #expect(note.textView.cardCursor(at: NSPoint(x: content.midX, y: content.midY)) == nil)
+        #expect(note.textView.cardCursor(at: NSPoint(x: content.maxX - 1, y: content.minY + 1)) == nil)
+        #expect(note.textView.cardCursor(at: NSPoint(x: geometry.frame.minX + 3, y: content.midY)) == .openHand)
+        #expect(note.textView.cardCursor(at: NSPoint(x: geometry.frame.maxX - 3, y: content.midY)) == .openHand)
+        #expect(note.textView.cardCursor(at: NSPoint(x: content.midX, y: geometry.frame.maxY - 2)) == .openHand)
         #expect(note.textView.cardCursor(at: NSPoint(x: 20, y: 4)) == nil)
     }
 }

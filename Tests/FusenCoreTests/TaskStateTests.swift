@@ -234,7 +234,7 @@ struct TaskStateTests {
         }
         func isBlue(_ c: NSColor?) -> Bool { c.map { $0.blueComponent > 0.8 && $0.redComponent < 0.3 && $0.greenComponent < 0.65 } ?? false }
         func isOrange(_ c: NSColor?) -> Bool { c.map { $0.redComponent > 0.75 && $0.greenComponent > 0.3 && $0.greenComponent < 0.6 && $0.blueComponent < 0.25 } ?? false }
-        // The ring of a signal: the text color, faint (a pale gray on the view's white).
+        // The ring under the arc: the text color, faint (a pale gray on the view's white).
         func isRing(_ c: NSColor?) -> Bool { c.map { $0.saturationComponent < 0.08 && $0.brightnessComponent > 0.75 && $0.brightnessComponent < 0.93 } ?? false }
         // Nothing drawn: the view's (white) background.
         func isEmpty(_ c: NSColor?) -> Bool { c.map { $0.alphaComponent < 0.1 || $0.brightnessComponent > 0.95 && $0.saturationComponent < 0.05 } ?? true }
@@ -248,9 +248,9 @@ struct TaskStateTests {
         #expect(isRing(color(ring, 0.5, 0.93)))         // at 6 o'clock
         #expect(isEmpty(color(ring, 0.5, 0.5)))
 
-        // Waiting: the same ring with a pause mark — two bars with a gap between them — in its middle.
+        // Waiting: a pause sign, all in orange — a ring, and two bars with a gap between them in its middle.
         let pause = try #require(e.layoutManager.taskIconRect(forCharacterAt: e.index(of: "- [>]")))
-        #expect(isRing(color(pause, 0.07, 0.5)) && isRing(color(pause, 0.5, 0.93)) && isRing(color(pause, 0.5, 0.07)))
+        #expect(isOrange(color(pause, 0.055, 0.5)) && isOrange(color(pause, 0.5, 0.945)) && isOrange(color(pause, 0.5, 0.055)))
         #expect(isOrange(color(pause, 0.35, 0.5)) && isOrange(color(pause, 0.65, 0.5)))    // the bars
         #expect(isEmpty(color(pause, 0.5, 0.5)))                                            // between them
         #expect(isEmpty(color(pause, 0.5, 0.25)) && isEmpty(color(pause, 0.2, 0.5)))        // between the bars and the ring

@@ -21,7 +21,8 @@ final class CardDropLine: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Moving cards with the mouse. A card is picked up by its frame — anywhere on it but on its text. Dropped
+/// Moving cards with the mouse. A card is picked up anywhere on it but on its lines of text; nothing marks
+/// that part but the pointer, which is a hand there. Dropped
 /// between two lines of the note it stands there on its own; dropped on a side of another card the two
 /// stand side by side (in a row, see CardSyntax). Only the Markdown changes: see CardArrangement.
 extension MarkdownTextView {
@@ -131,16 +132,16 @@ extension MarkdownTextView {
 
     // MARK: The mouse
 
-    /// The pointer over a card: a hand on its frame (it can be dragged), a pointing hand on "•••".
+    /// The pointer over a card: a hand where it can be picked up (around its text), a pointing hand on "•••".
     func cardCursor(at point: NSPoint) -> NSCursor? {
         guard concealsMarkdown, let layout = layoutManager as? ConcealingLayoutManager,
               let card = layout.cardGeometries().first(where: { $0.frame.contains(point) }) else { return nil }
         if card.menuArea.contains(point) { return .pointingHand }
-        if card.panel?.contains(point) == true { return nil }
+        if card.content?.contains(point) == true { return nil }
         return isEditable ? .openHand : nil
     }
 
-    /// Follows the mouse after a press on a card's frame. Released where it was pressed, it was a click:
+    /// Follows the mouse after a press on a card, around its text. Released where it was pressed, it was a click:
     /// the caret goes where the click points to. Moved, the card is dragged: a picture of it follows the
     /// pointer, a line shows where it would go, and releasing the button puts it there. Esc lets go of it.
     func trackCardPress(on card: ConcealingLayoutManager.CardGeometry, _ event: NSEvent) {
@@ -214,7 +215,7 @@ extension MarkdownTextView {
         return view
     }
 
-    /// A click on a card's frame: on or beside its title, the caret goes into the title; under its text,
+    /// A click on a card, around its text: on or beside its title, the caret goes into the title; under its text,
     /// to the end of the text (the closing line there shows nothing to click on); beside its text, to
     /// the line next to it.
     private func clickOnFrame(of card: ConcealingLayoutManager.CardGeometry, at point: NSPoint) {
@@ -224,7 +225,7 @@ extension MarkdownTextView {
         let index = characterIndexForInsertion(at: NSPoint(x: point.x + textContainerOrigin.x, y: point.y + textContainerOrigin.y))
         let closing = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: card.close.location), effectiveRange: nil)
         let caret: Int
-        if point.y < (card.panel?.minY ?? closing.minY) {
+        if point.y < (card.content?.minY ?? closing.minY) {
             caret = min(max(index, model.open.contentStart), model.open.contentsEnd)
         } else if point.y >= closing.minY {
             caret = ConcealedEditing.lastCaret(in: model, storage)

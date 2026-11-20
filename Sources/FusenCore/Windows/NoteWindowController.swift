@@ -168,7 +168,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         focusAccessory.isHidden = !hasSignals && meta.focus == nil
     }
 
-    static let focusButtonSize: CGFloat = 12
+    static let focusButtonSize: CGFloat = 18
 
     /// A button or a menu item (tag: the index in `NoteFocus.allCases`): turns that emphasis on, or off
     /// if it is on.

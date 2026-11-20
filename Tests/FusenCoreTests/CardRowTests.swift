@@ -167,8 +167,8 @@ struct CardRowTests {
             let cards = e.layoutManager.cardGeometries()
             let origin = e.textView.textContainerOrigin
             for (card, needle) in zip(cards, ["- [ ] 三", "短い"]) {
-                let panel = try #require(card.panel)
-                let index = e.textView.characterIndexForInsertion(at: NSPoint(x: panel.midX + origin.x, y: panel.minY + 14 + origin.y))
+                let content = try #require(card.content)
+                let index = e.textView.characterIndexForInsertion(at: NSPoint(x: content.midX + origin.x, y: content.minY + 10 + origin.y))
                 #expect(NSLocationInRange(index, card.range), "\(needle)")
             }
             // A selection in a card is drawn in that card.
@@ -177,7 +177,7 @@ struct CardRowTests {
             let rects = e.layoutManager.rectArray(forCharacterRange: range, withinSelectedCharacterRange: range,
                                                  in: e.layoutManager.textContainers[0], rectCount: &count)
             #expect(count == 1)
-            #expect(cards[1].panel?.contains(try #require(rects)[0]) == true)
+            #expect(cards[1].content?.contains(try #require(rects)[0]) == true)
         }
     }
 

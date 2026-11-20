@@ -9,15 +9,10 @@ final class MarkdownTextView: NSTextView {
         didSet { if focus != oldValue { updateInsertionPointColor() } }
     }
 
-    /// The caret is white on the darkened paper of 強調表示, and dark as always in a card that stays light.
+    /// The caret is white on the darkened paper of 強調表示 (cards are darkened with it).
     func updateInsertionPointColor() {
         guard let theme = (layoutManager as? ConcealingLayoutManager)?.theme else { return }
-        var onDarkPaper = focus != nil
-        if onDarkPaper, let storage = textStorage, let card = ConcealedEditing.card(around: selectedRange().location, in: storage),
-           storage.attribute(.mdCardShade, at: card.range.location, effectiveRange: nil) == nil {
-            onDarkPaper = false
-        }
-        let color = onDarkPaper ? theme.focusInk : theme.textColor
+        let color = focus != nil ? theme.focusInk : theme.textColor
         if insertionPointColor != color { insertionPointColor = color }
     }
 
@@ -395,7 +390,6 @@ final class MarkdownTextView: NSTextView {
         if let style = typingStyle, !keepsTypingStyle, !hasMarkedText(), new != NSRange(location: style.location, length: 0) {
             typingStyle = nil
         }
-        if focus != nil { updateInsertionPointColor() }
         if slashMenu != nil, !isChangingText { refreshSlashMenu() }
     }
 
@@ -946,8 +940,8 @@ final class MarkdownTextView: NSTextView {
         return NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
     }
 
-    /// A press on a card's "•••" opens its menu. A press on its frame — anywhere on the card but on its
-    /// text — is followed (see trackCardPress): a click puts the caret, a drag moves the card.
+    /// A press on a card's "•••" opens its menu. A press anywhere else on the card but on its lines of
+    /// text is followed (see trackCardPress): a click puts the caret, a drag moves the card.
     private func clickCard(_ event: NSEvent) -> Bool {
         guard concealsMarkdown, !hasMarkedText(), let layout = layoutManager as? ConcealingLayoutManager else { return false }
         let point = containerPoint(event)
@@ -958,7 +952,7 @@ final class MarkdownTextView: NSTextView {
             menu.popUp(positioning: nil, at: below, in: self)
             return true
         }
-        guard card.panel?.contains(point) != true else { return false } // on its text: a click in the text
+        guard card.content?.contains(point) != true else { return false } // on its text: a click in the text
         trackCardPress(on: card, event)
         return true
     }
@@ -1092,10 +1086,10 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        // On a card's frame (not on its text): the card's menu.
+        // On a card, but not on its lines of text: the card's menu.
         if concealsMarkdown, isEditable, !hasMarkedText(), let layout = layoutManager as? ConcealingLayoutManager {
             let point = containerPoint(event)
-            if let card = layout.cardGeometries().first(where: { $0.frame.contains(point) }), card.panel?.contains(point) != true,
+            if let card = layout.cardGeometries().first(where: { $0.frame.contains(point) }), card.content?.contains(point) != true,
                !card.tags.contains(where: { $0.contains(point) }) {
                 return cardMenu(forCardAt: card.range.location)
             }
@@ -1295,14 +1289,16 @@ final class MarkdownTextView: NSTextView {
     }
 
     /// After the text or the selection changed: what is typed after the "/" narrows the list. The menu
-    /// closes when nothing fits, when a space is typed, and when the caret leaves what was typed.
+    /// closes when nothing fits, when a space is typed, when the caret leaves what was typed, and when
+    /// what was typed makes the "/" code ("`a /`").
     private func refreshSlashMenu() {
         guard var menu = slashMenu, let storage = textStorage else { return }
         let ns = storage.string as NSString
         let selection = selectedRange()
         guard selection.length == 0, menu.trigger < ns.length, SlashCommand.isTrigger(ns.character(at: menu.trigger)),
               selection.location > menu.trigger,
-              selection.location <= ConcealedEditing.line(at: menu.trigger, in: storage).contentsEnd else { return closeSlashMenu() }
+              selection.location <= ConcealedEditing.line(at: menu.trigger, in: storage).contentsEnd,
+              storage.attribute(.mdCode, at: menu.trigger, effectiveRange: nil) == nil else { return closeSlashMenu() }
         let query = ns.substring(with: NSRange(location: menu.trigger + 1, length: selection.location - menu.trigger - 1))
         let commands = SlashCommand.matching(query)
         guard !commands.isEmpty, !query.contains(where: \.isWhitespace) else { return closeSlashMenu() }
@@ -1361,11 +1357,80 @@ final class MarkdownTextView: NSTextView {
             insertCard(nil)
         case .divider:
             insertDivider(nil)
-        case .doing, .waiting, .todo:
-            let item = NSMenuItem()
-            item.tag = command.taskState.flatMap(TaskState.allCases.firstIndex(of:)) ?? 0
-            setTaskState(item)
+        case .code:
+            insertCodeBlock(nil)
+        case .text, .h1, .h2, .h3, .h4, .bullet, .ordered, .quote, .todo, .waiting, .doing:
+            turnLine(into: command)
         }
+    }
+
+    /// The caret's line becomes a block of another kind (the "/" menu): its marker goes and the new one
+    /// comes, its text stays. The indentation that nests a list item stays where the new block can be
+    /// nested too (text, list items, to-dos); a heading or a quote starts at the margin.
+    private func turnLine(into command: SlashCommand) {
+        guard !hasMarkedText(), isEditable, let storage = textStorage else { return }
+        let ns = storage.string as NSString
+        let caret = selectedRange().location
+        let line = ConcealedEditing.line(at: caret, in: storage)
+        guard line.holdsInlineText else { return NSSound.beep() }
+        if let state = command.taskState, line.kind == .text || line.isListItem {
+            // A list item keeps its marker ("1. " becomes "1. [ ] "), a to-do changes its state.
+            let item = NSMenuItem()
+            item.tag = TaskState.allCases.firstIndex(of: state) ?? 0
+            return setTaskState(item)
+        }
+        let start = line.range.location
+        var indentationEnd = start
+        while indentationEnd < line.contentsEnd, ns.character(at: indentationEnd) == 0x20 || ns.character(at: indentationEnd) == 0x09 {
+            indentationEnd += 1
+        }
+        let nests = line.kind == .text || line.isListItem
+        let indentation = nests ? ns.substring(with: NSRange(location: start, length: indentationEnd - start)) : ""
+        let old = NSRange(location: start, length: (nests ? max(line.contentStart, indentationEnd) : line.contentStart) - start)
+        let marker: String
+        switch command {
+        case .text:
+            marker = indentation
+        case .h1, .h2, .h3, .h4:
+            marker = String(repeating: "#", count: command.headingLevel ?? 1) + " "
+        case .bullet:
+            marker = indentation + "- "
+        case .ordered:
+            // The next number, after a numbered item of the same list.
+            let above = start > 0 ? ConcealedEditing.line(at: start - 1, in: storage) : nil
+            let continued = above.flatMap { above -> String? in
+                guard above.kind == .ordered, let prefix = above.prefix else { return nil }
+                return ConcealedEditing.listPrefix(ns.substring(with: prefix), next: true, keepCheck: false)
+            }
+            marker = continued.flatMap { $0.prefix { $0 == " " || $0 == "\t" } == indentation[...] ? $0 : nil } ?? indentation + "1. "
+        case .quote:
+            marker = "> "
+        case .todo, .waiting, .doing:
+            marker = indentation + "- [\(command.taskState?.rawValue ?? " ")] "
+        case .card, .divider, .code:
+            return
+        }
+        guard ns.substring(with: old) != marker else { return }
+        guard replaceCharacters(in: old, with: marker, actionName: command.title) else { return }
+        let length = (marker as NSString).length
+        setSelectedRange(NSRange(location: caret <= NSMaxRange(old) ? start + length : caret + length - old.length, length: 0))
+    }
+
+    /// The "/" menu's code block: the fences of an empty block on the caret's line if that is empty,
+    /// otherwise below it; the caret goes between them.
+    @objc func insertCodeBlock(_ sender: Any?) {
+        guard !hasMarkedText(), isEditable, let storage = textStorage else { return }
+        let line = ConcealedEditing.line(at: selectedRange().location, in: storage)
+        let contents = NSRange(location: line.range.location, length: line.contentsEnd - line.range.location)
+        let block = "```\n\n```" + (line.hasNewline ? "" : "\n")
+        if (storage.string as NSString).substring(with: contents).trimmingCharacters(in: .whitespaces).isEmpty {
+            guard replaceCharacters(in: contents, with: block, actionName: "コードブロック") else { return }
+            setSelectedRange(NSRange(location: contents.location + 4, length: 0))
+        } else {
+            guard replaceCharacters(in: NSRange(location: line.contentsEnd, length: 0), with: "\n" + block, actionName: "コードブロック") else { return }
+            setSelectedRange(NSRange(location: line.contentsEnd + 5, length: 0))
+        }
+        scrollRangeToVisible(selectedRange())
     }
 
     // MARK: The pointer over a card
@@ -1384,7 +1449,7 @@ final class MarkdownTextView: NSTextView {
         cardTrackingArea = area
     }
 
-    // A hand over a card's frame, which can be dragged; a pointing hand over "•••".
+    // A hand over a card where it can be picked up (around its text); a pointing hand over "•••".
     override func mouseMoved(with event: NSEvent) {
         if let cursor = cardCursor(at: containerPoint(event)) { cursor.set() } else { super.mouseMoved(with: event) }
     }

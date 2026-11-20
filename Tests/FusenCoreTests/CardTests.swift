@@ -505,7 +505,7 @@ struct CardTests {
         #expect(NoteTitle.derive(from: ":::\n本文") == "本文")
     }
 
-    @Test func emphasisKeepsACardWithAnEmphasizedToDoLight() throws {
+    @Test func emphasisDarkensTheCardsAndKeepsOnlyTheEmphasizedToDosLight() throws {
         let text = "- [/] 外の進行中\n:::card orange A\n- [/] 中の進行中\n- [>] 中の待機\n:::\n:::card blue B\n- [ ] 未着手\n:::"
         let note = TestNote(text, size: CGSize(width: 280, height: 330), focus: .doing)
         let storage = try #require(note.textView.textStorage)
@@ -514,30 +514,32 @@ struct CardTests {
         func alpha(_ needle: String) -> CGFloat {
             (storage.attribute(.foregroundColor, at: index(needle), effectiveRange: nil) as? NSColor)?.alphaComponent ?? -1
         }
-        // Outside a card: white on the dark paper.
-        #expect(storage.attribute(.mdInk, at: index("外の進行中"), effectiveRange: nil) as? NSColor == theme.focusInk)
-        // In the card with a to-do in progress: that to-do and the title as always, the other line faded.
-        #expect(storage.attribute(.mdInk, at: index("中の進行中"), effectiveRange: nil) == nil)
-        #expect(alpha("中の進行中") == 1)
-        #expect(storage.attribute(.foregroundColor, at: index("A\n"), effectiveRange: nil) as? NSColor == CardColor.orange.tagText)
+        // The to-dos in progress are white, outside a card and in one: the cards go dark with the paper.
+        for needle in ["外の進行中", "中の進行中"] {
+            #expect(storage.attribute(.mdInk, at: index(needle), effectiveRange: nil) as? NSColor == theme.focusInk, "\(needle)")
+            #expect(storage.attribute(.foregroundColor, at: index(needle), effectiveRange: nil) as? NSColor == theme.focusInk, "\(needle)")
+        }
+        // Everything else in the cards fades, their titles too — also in the card that holds one.
+        #expect(storage.attribute(.foregroundColor, at: index("A\n"), effectiveRange: nil) as? NSColor
+                == CardColor.orange.tagText.withAlphaComponent(theme.focusFade))
         #expect(abs(alpha("中の待機") - theme.focusFade) < 0.001)
-        #expect(storage.attribute(.mdCardShade, at: index("中の待機"), effectiveRange: nil) == nil)
-        // The card without one: dark, all of it faded.
-        #expect(storage.attribute(.mdCardShade, at: index(":::card blue"), effectiveRange: nil) != nil)
         #expect(abs(alpha("未着手") - theme.focusFade) < 0.001)
+        for needle in [":::card orange", "中の進行中", "中の待機", ":::card blue", "未着手"] {
+            #expect(storage.attribute(.mdCardShade, at: index(needle), effectiveRange: nil) != nil, "\(needle)")
+        }
         let layout = try #require(note.textView.layoutManager as? ConcealingLayoutManager)
-        #expect(layout.cardGeometries().map(\.isShaded) == [false, true])
-        // The caret: white on the dark paper, dark in the light card.
-        note.textView.setSelectedRange(NSRange(location: index("外の進行中"), length: 0))
-        #expect(note.textView.insertionPointColor == theme.focusInk)
-        note.textView.setSelectedRange(NSRange(location: index("中の待機"), length: 0))
-        #expect(note.textView.insertionPointColor == theme.textColor)
-        note.textView.setSelectedRange(NSRange(location: index("未着手"), length: 0))
-        #expect(note.textView.insertionPointColor == theme.focusInk)
+        #expect(layout.cardGeometries().map(\.isShaded) == [true, true])
+        // The caret is white everywhere.
+        for needle in ["外の進行中", "中の待機", "未着手"] {
+            note.textView.setSelectedRange(NSRange(location: index(needle), length: 0))
+            #expect(note.textView.insertionPointColor == theme.focusInk, "\(needle)")
+        }
         try note.write("cards-focus-doing")
         note.controller.setFocus(.waiting)
         try note.write("cards-focus-waiting")
         note.controller.setFocus(nil)
+        #expect(layout.cardGeometries().map(\.isShaded) == [false, false])
+        #expect(storage.attribute(.mdCardShade, at: index("中の待機"), effectiveRange: nil) == nil)
         try note.write("cards-note")
     }
 
@@ -559,31 +561,33 @@ struct CardTests {
 
     // MARK: Drawing
 
-    @Test func theCardIsAFrameWithATagAndAPanelForItsText() throws {
+    @Test func theCardIsARectangleWithATagAndItsTextRightOnIt() throws {
         let e = ConcealedEditor(sample)
         let card = try #require(e.layoutManager.cardGeometries().first)
         let container = e.layoutManager.textContainers[0]
         #expect(card.color == .orange)
-        // The frame spans the line, the panel is inside it, and the text is inside the panel.
+        // The card spans the line, and its text is right on it, the card's padding from its edges.
         #expect(abs(card.frame.minX - container.lineFragmentPadding) < 0.5)
         #expect(abs(card.frame.maxX - (container.size.width - container.lineFragmentPadding)) < 0.5)
-        let panel = try #require(card.panel)
-        #expect(card.frame.contains(panel))
-        #expect(abs(panel.minX - card.frame.minX - theme.cardFrameSide) < 0.5)
-        #expect(abs(e.x(at: e.index(of: "- [/]")) - panel.minX - theme.cardPanelPaddingX) < 0.5)
+        let content = try #require(card.content)
+        #expect(card.frame.contains(content))
+        #expect(abs(content.minX - card.frame.minX - theme.cardPadding) < 0.5)
+        #expect(abs(card.frame.maxX - content.maxX - theme.cardPadding) < 0.5)
+        #expect(abs(e.x(at: e.index(of: "- [/]")) - content.minX) < 0.5)
         let task = e.layoutManager.lineFragmentRect(forGlyphAt: e.layoutManager.glyphIndexForCharacter(at: e.index(of: "進行中")),
                                                     effectiveRange: nil)
         let last = e.layoutManager.lineFragmentRect(forGlyphAt: e.layoutManager.glyphIndexForCharacter(at: e.index(of: "待機")),
                                                     effectiveRange: nil)
-        #expect(abs(task.minY - panel.minY - theme.cardPanelPaddingY) < 0.5)
-        #expect(abs(panel.maxY - last.maxY - theme.cardPanelPaddingY) < 0.5)
+        #expect(abs(task.minY - content.minY) < 0.5)
+        #expect(abs(content.maxY - last.maxY) < 0.5)
+        #expect(abs(card.frame.maxY - content.maxY - theme.cardPaddingBottom) < 0.5)
         // The tag is around the title, at the frame's top left; "•••" is at its top right.
         let tag = try #require(card.tags.first)
         #expect(card.tags.count == 1)
         #expect(tag.height == theme.cardTagHeight)
-        #expect(abs(tag.minX - card.frame.minX - theme.cardFrameSide) < 0.5)
-        #expect(abs(tag.minY - card.frame.minY - theme.cardFrameTop) < 1.5)
-        #expect(abs(panel.minY - tag.maxY - theme.cardTagGap) < 1.5)
+        #expect(abs(tag.minX - content.minX) < 0.5)                       // the text starts under the tag's edge
+        #expect(abs(tag.minY - card.frame.minY - theme.cardPaddingTop) < 1.5)
+        #expect(abs(content.minY - tag.maxY - theme.cardTagGap) < 1.5)
         #expect(abs(card.dots.maxX - (card.frame.maxX - theme.cardDotsInset)) < 0.5)
         #expect(abs(card.dots.midY - tag.midY) < 0.5)
         // The lines around the card are not moved by it.
@@ -617,8 +621,8 @@ struct CardTests {
         let rep = try #require(NSBitmapImageRep(data: data))
         let cards = e.layoutManager.cardGeometries()
         #expect(cards.count == 3)
-        #expect(cards[2].panel == nil && cards[2].titleIsEmpty)       // no text, no title: the placeholder's tag
-        // The frame is painted in the card's color, the panel is (nearly) white.
+        #expect(cards[2].content == nil && cards[2].titleIsEmpty)     // no text, no title: the placeholder's tag
+        // The card is painted in its color, under its text too (no panel of another color).
         let scale = CGFloat(rep.pixelsWide) / e.textView.bounds.width
         let origin = e.textView.textContainerOrigin
         func color(_ point: NSPoint) -> NSColor? {
@@ -628,9 +632,10 @@ struct CardTests {
             guard let a, let b = b.usingColorSpace(.sRGB) else { return false }
             return abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent) + abs(a.blueComponent - b.blueComponent) < 0.03
         }
-        let frame = cards[0].frame, panel = try #require(cards[0].panel)
+        let frame = cards[0].frame, content = try #require(cards[0].content)
         #expect(close(color(NSPoint(x: frame.minX + 3, y: frame.midY)), CardColor.orange.frame))
-        #expect(close(color(NSPoint(x: panel.maxX - 4, y: panel.midY)), theme.cardPanelColor))
+        #expect(close(color(NSPoint(x: content.maxX - 4, y: content.midY)), CardColor.orange.frame))
+        #expect(close(color(NSPoint(x: content.maxX - 4, y: content.minY + 2)), CardColor.orange.frame))
         #expect(close(color(NSPoint(x: cards[0].tags[0].minX + 2, y: cards[0].tags[0].minY + 2)), CardColor.orange.tag))
         if let dir = ProcessInfo.processInfo.environment["MARKDOWN_STICKIES_RENDER_DIR"] {
             try data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("cards.png"))

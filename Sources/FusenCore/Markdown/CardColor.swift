@@ -38,7 +38,7 @@ enum CardColor: String, CaseIterable, Sendable {
         }
     }
 
-    /// The card itself: the frame around its content.
+    /// The card itself: the rectangle its title and its text stand on.
     var frame: NSColor { Self.color(values.frame) }
     /// The tag behind the title.
     var tag: NSColor { Self.color(values.tag) }

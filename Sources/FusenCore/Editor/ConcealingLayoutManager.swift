@@ -103,18 +103,29 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     }
 
     /// The lines around a row of cards show nothing when the Markdown is concealed: they take no height.
+    /// A card's closing line is only the space under its text then; with the Markdown shown it gets the
+    /// room its ":::" needs to stand inside the card.
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
-        guard concealsMarkdown, let storage = textStorage, glyphRange.length > 0 else { return false }
+        guard let storage = textStorage, glyphRange.length > 0 else { return false }
         let character = characterIndexForGlyph(at: glyphRange.location)
         guard character < storage.length else { return false }
         let kind = lineKind(at: character)
-        guard kind == .rowOpen || kind == .rowClose else { return false }
-        lineFragmentRect.pointee.size.height = 0
-        lineFragmentUsedRect.pointee.size.height = 0
-        baselineOffset.pointee = 0
-        return true
+        if concealsMarkdown, kind == .rowOpen || kind == .rowClose {
+            lineFragmentRect.pointee.size.height = 0
+            lineFragmentUsedRect.pointee.size.height = 0
+            baselineOffset.pointee = 0
+            return true
+        }
+        if !concealsMarkdown, kind == .cardClose {
+            let room = (theme.fontSize * 0.7).rounded()
+            lineFragmentRect.pointee.size.height += room
+            lineFragmentUsedRect.pointee.size.height += room
+            baselineOffset.pointee += room - theme.cardGap - 2 // above the card's lower edge
+            return true
+        }
+        return false
     }
 
     // MARK: Drawing
@@ -228,8 +239,8 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     // MARK: Cards
 
     /// Where the parts of a card are, in the container's coordinates. Everything follows from where the
-    /// card's lines were laid out: the opening line holds the top of the frame and the title, the closing
-    /// line the frame's bottom, and the lines between them are the text on the panel.
+    /// card's lines were laid out: the opening line holds the top of the card and the title, the closing
+    /// line the card's bottom, and the lines between them are its text.
     struct CardGeometry {
         /// The card's characters: its opening line through its closing line.
         let range: NSRange
@@ -238,8 +249,10 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         let color: CardColor
         let isShaded: Bool
         let frame: NSRect
-        /// The white panel under the card's text; nil for a card with no lines of text.
-        let panel: NSRect?
+        /// Where the card's lines of text are, from its left padding to its right: there the pointer is the
+        /// text's. Everywhere else on the card it holds the card (see MarkdownTextView+CardDrag). Nil for
+        /// a card with no lines of text.
+        let content: NSRect?
         /// The tag behind the title, one piece per line of it.
         let tags: [NSRect]
         let titleIsEmpty: Bool
@@ -290,10 +303,11 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         }
         let frame = NSRect(x: top.minX + padding, y: top.minY + theme.cardGap,
                            width: top.width - 2 * padding, height: bottom - theme.cardGap - (top.minY + theme.cardGap))
-        var panel: NSRect?
+        var content: NSRect?
         if NSMaxRange(open) < close.location {
-            let minY = title.maxY - theme.cardPanelPaddingY, maxY = frame.maxY - theme.cardFrameBottom
-            panel = NSRect(x: frame.minX + theme.cardFrameSide, y: minY, width: frame.width - 2 * theme.cardFrameSide, height: maxY - minY)
+            let closing = lineFragmentRect(forGlyphAt: glyphIndexForCharacter(at: close.location), effectiveRange: nil)
+            content = NSRect(x: frame.minX + theme.cardPadding, y: title.maxY,
+                             width: frame.width - 2 * theme.cardPadding, height: max(closing.minY - title.maxY, 0))
         }
 
         // The title: what follows the hidden syntax on the opening line.
@@ -331,26 +345,21 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let width = (theme.cardTitlePlaceholder as NSString).size(withAttributes: [.font: theme.cardTitleFont]).width
             tags.append(tag(from: start, to: start + ceil(width), line: lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)))
         }
-        let dotsY = frame.minY + theme.cardFrameTop + theme.cardTagHeight / 2 - theme.cardDotSize / 2
+        let dotsY = frame.minY + theme.cardPaddingTop + theme.cardTagHeight / 2 - theme.cardDotSize / 2
         let dots = NSRect(x: frame.maxX - theme.cardDotsInset - theme.cardDotsWidth, y: dotsY,
                           width: theme.cardDotsWidth, height: theme.cardDotSize)
         return CardGeometry(range: range, open: open, close: close, color: color,
                             isShaded: storage.attribute(.mdCardShade, at: open.location, effectiveRange: nil) != nil,
-                            frame: frame, panel: panel, tags: tags, titleIsEmpty: titleEnd == titleStart, dots: dots)
+                            frame: frame, content: content, tags: tags, titleIsEmpty: titleEnd == titleStart, dots: dots)
     }
 
-    /// The frame, the panel, the title's tag and "•••" of each card; the text is drawn over them.
+    /// Each card's rectangle, the title's tag and "•••"; the text is drawn over them.
     private func drawCards(in characters: NSRange, at origin: NSPoint) {
         for card in cardGeometries(in: characters) {
             func tone(_ color: NSColor) -> NSColor { card.isShaded ? theme.shaded(color) : color }
             let fade = card.isShaded ? theme.focusFade : 1
             tone(card.color.frame).setFill()
             NSBezierPath(roundedRect: card.frame.offsetBy(dx: origin.x, dy: origin.y), xRadius: theme.cardRadius, yRadius: theme.cardRadius).fill()
-            if let panel = card.panel {
-                tone(theme.cardPanelColor).setFill()
-                NSBezierPath(roundedRect: panel.offsetBy(dx: origin.x, dy: origin.y),
-                             xRadius: theme.cardPanelRadius, yRadius: theme.cardPanelRadius).fill()
-            }
             tone(card.color.tag).setFill()
             for tag in card.tags {
                 NSBezierPath(roundedRect: tag.offsetBy(dx: origin.x, dy: origin.y), xRadius: theme.cardTagRadius, yRadius: theme.cardTagRadius).fill()

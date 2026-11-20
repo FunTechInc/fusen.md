@@ -426,7 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     :::card orange プロジェクト
     - [/] 進行中のタスク（クリックで完了）
     - [>] 待機のタスク（クリックで進行中に。⌥クリックで待機にする・外す）
-    - [ ] カードは枠をつかんで動かせます
+    - [ ] カードは名前のタグや余白をつかんで動かせます
     :::
 
     > 消してしまった文章や閉じたメモは「ファイル > メモの履歴…」から戻せます。

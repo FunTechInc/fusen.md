@@ -128,25 +128,22 @@ struct MarkdownTheme {
     var focusFade: CGFloat = 0.31
     var focusButtonFade: CGFloat = 0.29
 
-    // Cards (the Figma): a frame in the card's color with the title in a tag and "•••" at its top, and
-    // on it a white panel that holds the card's text. Sizes are the Figma's, drawn for 12px text.
+    // Cards: a rounded rectangle in the card's color, with the title in a tag and "•••" at its top and
+    // the card's text right under them, on the card's color (no panel of its own), close to its edges.
     /// Space above and below a card.
     var cardGap: CGFloat = 5
-    var cardFrameTop: CGFloat = 8
-    var cardFrameSide: CGFloat = 8
-    var cardFrameBottom: CGFloat = 8
-    /// Between the title's tag and the panel.
-    var cardTagGap: CGFloat = 5
+    /// From the card's edges to the tag and the text: above the tag, left and right, below the last line.
+    var cardPaddingTop: CGFloat = 7
+    var cardPadding: CGFloat = 8
+    var cardPaddingBottom: CGFloat = 5
+    /// Between the title's tag and the first line of text.
+    var cardTagGap: CGFloat = 3
     /// Left and right of the title in its tag.
-    var cardTagPadding: CGFloat = 8
-    var cardPanelPaddingX: CGFloat = 8
-    var cardPanelPaddingY: CGFloat = 6
+    var cardTagPadding: CGFloat = 7
     var cardRadius: CGFloat = 8
-    var cardPanelRadius: CGFloat = 6
     var cardTagRadius: CGFloat = 3
-    var cardPanelColor = NSColor(srgbRed: 253 / 255, green: 253 / 255, blue: 253 / 255, alpha: 1)
     /// The three dots of "•••": their size, the distance between their centres, and how far the last one
-    /// is from the frame's right edge.
+    /// is from the card's right edge.
     var cardDotSize: CGFloat = 2.5
     var cardDotSpacing: CGFloat = 7
     var cardDotsInset: CGFloat = 11
@@ -162,8 +159,8 @@ struct MarkdownTheme {
         return baseline - font.capHeight / 2 - cardTagHeight / 2
     }
     var cardDotsWidth: CGFloat { 2 * cardDotSpacing + cardDotSize }
-    /// How far a card's text is from the card's edges, left and right.
-    var cardContentInset: CGFloat { cardFrameSide + cardPanelPaddingX }
+    /// How far a card's text is from the card's edges, left and right: it starts under the tag's edge.
+    var cardContentInset: CGFloat { cardPadding }
     /// Shown in the tag of a card without a title.
     var cardTitlePlaceholder = "タイトル"
     /// Between two cards that stand side by side.
@@ -217,8 +214,8 @@ final class MarkdownStyler {
     private let codeParagraph: NSParagraphStyle
     /// Dividers: a thin block, like Notion's.
     private let ruleParagraph: NSParagraphStyle
-    /// A card's opening line: the top of its frame, the title in its tag, and the space down to the
-    /// panel's first line. Its closing line: the space from the panel's last line to under the frame.
+    /// A card's opening line: the top of the card, the title in its tag, and the space down to the first
+    /// line of text. Its closing line: the space from the last line of text to under the card.
     private let cardOpenParagraph: NSParagraphStyle
     private let cardCloseParagraph: NSParagraphStyle
     /// The lines around a row of cards: small (and of no height at all when the Markdown is concealed,
@@ -283,15 +280,15 @@ final class MarkdownStyler {
         let cardOpen = paragraph.mutableCopy() as! NSMutableParagraphStyle
         cardOpen.minimumLineHeight = theme.cardTagHeight
         cardOpen.maximumLineHeight = theme.cardTagHeight
-        cardOpen.paragraphSpacingBefore = theme.cardGap + theme.cardFrameTop
-        cardOpen.paragraphSpacing = theme.cardTagGap + theme.cardPanelPaddingY
-        cardOpen.firstLineHeadIndent = theme.cardFrameSide + theme.cardTagPadding
+        cardOpen.paragraphSpacingBefore = theme.cardGap + theme.cardPaddingTop
+        cardOpen.paragraphSpacing = theme.cardTagGap
+        cardOpen.firstLineHeadIndent = theme.cardPadding + theme.cardTagPadding
         cardOpen.headIndent = cardOpen.firstLineHeadIndent
         // The title ends before "•••".
         cardOpen.tailIndent = -(theme.cardDotsInset + theme.cardDotsWidth + theme.cardTagPadding + 6)
         cardOpenParagraph = cardOpen
         let cardClose = paragraph.mutableCopy() as! NSMutableParagraphStyle
-        cardClose.minimumLineHeight = theme.cardPanelPaddingY + theme.cardFrameBottom + theme.cardGap
+        cardClose.minimumLineHeight = theme.cardPaddingBottom + theme.cardGap
         cardClose.maximumLineHeight = cardClose.minimumLineHeight
         cardClose.paragraphSpacing = 0
         cardClose.firstLineHeadIndent = theme.cardContentInset // where ":::" stands when the Markdown is shown
@@ -476,17 +473,13 @@ final class MarkdownStyler {
         return states
     }
 
-    /// 強調表示: the paper is darkened (by the window), so a to-do in the emphasized state is written in
-    /// white, and every other line fades to `theme.focusFade` of its colors. A card that holds an
-    /// emphasized to-do stays light: there the to-do and the card's title keep their colors, and only
-    /// the card's other lines fade. A card without one goes dark with the paper.
+    /// 強調表示: the paper is darkened (by the window) and every card with it, so a to-do in the emphasized
+    /// state is written in white — and with it what is nested under it: the lines that follow it and are
+    /// indented deeper than it (Tab nests a list item under the one above). Every other line, a card's
+    /// title too, fades to `theme.focusFade` of its colors.
     private func applyFocus(_ focus: NoteFocus, _ s: NSTextStorage, _ ns: NSString) {
-        var litCards: Set<Int> = []
-        s.enumerateAttribute(.mdTaskToggle, in: NSRange(location: 0, length: ns.length)) { value, run, _ in
-            guard let check = value as? Int, check < ns.length, TaskState(character: ns.character(at: check)) == focus.state,
-                  let card = s.attribute(.mdCard, at: run.location, effectiveRange: nil) as? Int else { return }
-            litCards.insert(card)
-        }
+        /// How deep the emphasized to-do is indented whose nested lines the pass is in.
+        var parent: Int?
         var location = 0
         while location < ns.length {
             let paragraph = ns.paragraphRange(for: NSRange(location: location, length: 0))
@@ -497,19 +490,32 @@ final class MarkdownStyler {
                 state = TaskState(character: ns.character(at: check))
                 stop.pointee = true
             }
-            let card = s.attribute(.mdCard, at: paragraph.location, effectiveRange: nil) as? Int
             let kind = (s.attribute(.mdLine, at: paragraph.location, effectiveRange: nil) as? String).flatMap(MarkdownLine.init) ?? .text
-            if let card, litCards.contains(card) {
-                if state == focus.state || kind.isCardStructure { continue }
-            } else if state == focus.state {
-                recolor(paragraph, s) { isText($0) ? theme.focusInk.withAlphaComponent($0.alphaComponent) : $0 }
-                s.addAttribute(.mdInk, value: theme.focusInk, range: paragraph)
-                continue
-            } else if card != nil {
+            if s.attribute(.mdCard, at: paragraph.location, effectiveRange: nil) != nil {
                 s.addAttribute(.mdCardShade, value: true, range: paragraph)
             }
-            recolor(paragraph, s) { $0.withAlphaComponent($0.alphaComponent * theme.focusFade) }
-            s.addAttribute(.mdFade, value: theme.focusFade, range: paragraph)
+            // The indentation, and whether anything follows it on the line.
+            var end = paragraph.location
+            while end < NSMaxRange(paragraph), ns.character(at: end) == 0x20 || ns.character(at: end) == 0x09 { end += 1 }
+            let depth = self.depth(of: NSRange(location: paragraph.location, length: end - paragraph.location), ns)
+            let isEmpty = end == NSMaxRange(paragraph) || ns.character(at: end) == 0x0A || ns.character(at: end) == 0x0D
+            var isLit = false
+            if kind.isCardStructure {
+                parent = nil // nothing is nested across a card's edge
+            } else if state == focus.state {
+                isLit = true
+                parent = min(parent ?? depth, depth)
+            } else if let outer = parent {
+                // An empty line between nested lines does not end them.
+                if isEmpty || depth > outer { isLit = true } else { parent = nil }
+            }
+            if isLit {
+                recolor(paragraph, s) { isText($0) ? theme.focusInk.withAlphaComponent($0.alphaComponent) : $0 }
+                s.addAttribute(.mdInk, value: theme.focusInk, range: paragraph)
+            } else {
+                recolor(paragraph, s) { $0.withAlphaComponent($0.alphaComponent * theme.focusFade) }
+                s.addAttribute(.mdFade, value: theme.focusFade, range: paragraph)
+            }
         }
     }
 

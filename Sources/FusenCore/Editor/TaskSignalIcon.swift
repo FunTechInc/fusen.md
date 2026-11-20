@@ -1,10 +1,10 @@
 import AppKit
 
 /// What a to-do shows in its marker column: Notion's checkbox (not started, done) or a signal. The two
-/// signals are a pair: the same ring, as large as the checkbox and as faint as the app's dividers (so it
-/// sits on every paper color), and on it one mark in the signal's color —
-///  * waiting: a pause mark in the middle of the ring;
-///  * in progress: a bold arc on the ring, which is what turns.
+/// signals are rings as large as the checkbox —
+///  * waiting: a pause sign, the ring and the two bars in it in the signal's orange;
+///  * in progress: a ring as faint as the app's dividers (so it sits on every paper color), and on it a
+///    bold blue arc, which is what turns.
 ///
 /// Everything here is in a coordinate system whose y axis points down, as in the (flipped) text view
 /// and the layers above it. Sizes are for a 14-point icon and scale with it.
@@ -15,18 +15,22 @@ enum TaskSignalIcon {
         case whole, track, arc
     }
 
-    /// How much of the ink (the text color) the ring keeps: as much as a divider.
+    /// How much of the ink (the text color) the ring under the arc keeps: as much as a divider.
     static let ringAlpha: CGFloat = 0.16
     /// How far around the ring the arc reaches, from 12 o'clock clockwise.
     private static let arcSweep: CGFloat = 2 * .pi / 3
 
+    /// In progress: how wide the ring and the arc on it are drawn.
     static func ringLineWidth(in rect: CGRect) -> CGFloat { rect.width * 2 / 14 }
+    /// Waiting: the ring of the pause sign is finer, about the weight of the checkbox's border, as it is
+    /// drawn in full color.
+    static func pauseRingLineWidth(in rect: CGRect) -> CGFloat { rect.width * 1.5 / 14 }
 
     private static func ringRadius(in rect: CGRect) -> CGFloat { (rect.width - ringLineWidth(in: rect)) / 2 }
 
-    /// The ring's centre line.
-    static func ringPath(in rect: CGRect) -> CGPath {
-        let radius = ringRadius(in: rect)
+    /// The centre line of a ring drawn `lineWidth` wide (by default the ring under the arc).
+    static func ringPath(in rect: CGRect, lineWidth: CGFloat? = nil) -> CGPath {
+        let radius = (rect.width - (lineWidth ?? ringLineWidth(in: rect))) / 2
         return CGPath(ellipseIn: CGRect(x: rect.midX - radius, y: rect.midY - radius, width: 2 * radius, height: 2 * radius), transform: nil)
     }
 
@@ -39,10 +43,10 @@ enum TaskSignalIcon {
         return path
     }
 
-    /// Waiting: the pause mark, two bars with round ends in the middle of the ring.
+    /// Waiting: the two bars of the pause sign, with round ends, in the middle of the ring.
     static func pauseBarsPath(in rect: CGRect) -> CGPath {
         let unit = rect.width / 14
-        let width = 2.4 * unit, height = 6.6 * unit, gap = 2.2 * unit
+        let width = 2 * unit, height = 6 * unit, gap = 2.2 * unit
         let path = CGMutablePath()
         for x in [rect.midX - gap / 2 - width, rect.midX + gap / 2] {
             path.addRoundedRect(in: CGRect(x: x, y: rect.midY - height / 2, width: width, height: height),
@@ -54,8 +58,8 @@ enum TaskSignalIcon {
     // MARK: Drawing
 
     /// Draws the checkbox or signal of `state` in `rect` (a square) of the current, flipped context.
-    /// `ink` is the color of the empty checkbox and (fainter) of a signal's ring — the text color, unless
-    /// the paper is dark; `alpha` fades the whole icon.
+    /// `ink` is the color of the empty checkbox and (fainter) of the ring under the arc — the text color,
+    /// unless the paper is dark; `alpha` fades the whole icon.
     static func draw(_ state: TaskState, in rect: NSRect, theme: MarkdownTheme, ink: NSColor? = nil, alpha: CGFloat = 1,
                      ring: Ring = .whole) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -73,7 +77,11 @@ enum TaskSignalIcon {
         case .todo, .done:
             drawCheckbox(checked: state == .done, in: rect, theme: theme, ink: ink)
         case .waiting:
-            strokeRing()
+            let width = pauseRingLineWidth(in: rect)
+            context.addPath(ringPath(in: rect, lineWidth: width))
+            context.setStrokeColor(theme.waitingColor.cgColor)
+            context.setLineWidth(width)
+            context.strokePath()
             context.addPath(pauseBarsPath(in: rect))
             context.setFillColor(theme.waitingColor.cgColor)
             context.fillPath()

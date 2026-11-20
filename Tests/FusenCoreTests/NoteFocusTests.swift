@@ -103,6 +103,54 @@ struct NoteFocusTests {
         #expect(alpha(e.storage, 0) == 1)
     }
 
+    @Test func whatIsNestedUnderAnEmphasizedToDoKeepsItsLookToo() throws {
+        let nested = """
+        - [/] 親
+        \t- 子
+        \t\t- [ ] 孫
+        \tメモ
+
+        \t- 空行のあと
+        - [ ] 別
+        \t- 別の子
+        - [>] 待機
+        \t- [/] 待機の中の進行中
+        \t\t- その子
+        \t- 兄弟
+        :::card orange A
+        \t- [/] カードの中
+        \t\t- カードの中の子
+        :::
+        \t- カードの外
+        """
+        let e = ConcealedEditor(nested)
+        func lit(_ needle: String) -> Bool {
+            let index = e.index(of: needle)
+            let isLit = e.storage.attribute(.mdInk, at: index, effectiveRange: nil) as? NSColor == theme.focusInk
+            // Lit or faded, never both and never neither.
+            #expect(isLit != (e.storage.attribute(.mdFade, at: index, effectiveRange: nil) != nil), "\(needle)")
+            return isLit
+        }
+        // In progress: the to-do and every line indented deeper than it that follows it — its items, their
+        // items, text, across an empty line — up to the next line that is not.
+        e.styler.restyle(e.storage, focus: .doing)
+        for needle in ["親", "子\n", "孫", "メモ", "空行のあと", "待機の中の進行中", "その子", "カードの中\n", "カードの中の子"] {
+            #expect(lit(needle), "\(needle)")
+        }
+        for needle in ["別\n", "別の子", "待機\n", "兄弟", "A\n", "カードの外"] { #expect(!lit(needle), "\(needle)") }
+        // A nested to-do that is not done yet is drawn with the white ink too (its checkbox), and the text
+        // of a nested line is white.
+        #expect(e.storage.attribute(.foregroundColor, at: e.index(of: "孫"), effectiveRange: nil) as? NSColor == theme.focusInk)
+        // Waiting: its nested lines with it, whatever their own state.
+        e.styler.restyle(e.storage, focus: .waiting)
+        for needle in ["待機\n", "待機の中の進行中", "その子", "兄弟"] { #expect(lit(needle), "\(needle)") }
+        for needle in ["親", "子\n", "孫", "メモ", "空行のあと", "別\n", "別の子", "A\n", "カードの中\n", "カードの中の子", "カードの外"] {
+            #expect(!lit(needle), "\(needle)")
+        }
+        try TestNote(nested, size: CGSize(width: 300, height: 470), focus: .doing).write("focus-nested-doing")
+        try TestNote(nested, size: CGSize(width: 300, height: 470), focus: .waiting).write("focus-nested-waiting")
+    }
+
     @Test func theEmphasisIsSavedWithTheNote() throws {
         var meta = NoteMeta(frame: CGRect(x: 1, y: 2, width: 280, height: 240))
         meta.focus = .waiting

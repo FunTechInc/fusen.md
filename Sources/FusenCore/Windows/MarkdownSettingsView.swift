@@ -26,15 +26,15 @@ struct MarkdownSettingsView: View {
                 row("---", Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 120, height: 1),
                     note: "区切り線。「書式」メニューからも")
                 row("```", Text("コードブロック").font(.body.monospaced()), note: "次の ``` の行までがコード")
-                row("/", Text("カード・信号などを選ぶメニュー"), note: "スペースの後でも。日本語入力では ；")
+                row("/", Text("見出し・リスト・カード・信号などを選ぶメニュー"), note: "スペースの後でも。日本語入力では ；")
             }
 
             Section("カード") {
                 Text("カードは、色と名前の付いた枠です。「書式 > カードを挿入」か / メニューで作り、中には普通の Markdown を書きます。")
                     .fixedSize(horizontal: false, vertical: true)
                 row(":::card␣色␣名前", Text("カードの始まり"), note: ":::  の行までがカード")
-                row("枠をドラッグ", Text("並べ替え。別のカードの左右の端に落とすと横に並ぶ"), note: "Esc で中止")
-                row("•••", Text("色を変える・カードを解除・削除"), note: "枠の右クリックでも")
+                row("ドラッグ", Text("並べ替え。別のカードの左右の端に落とすと横に並ぶ"), note: "名前のタグや余白をつかむ。Esc で中止")
+                row("•••", Text("色を変える・カードを解除・削除"), note: "余白の右クリックでも")
                 row("Return", Text("名前から中身へ。中身の最後の空行で押すとカードの下へ"))
             }
 
