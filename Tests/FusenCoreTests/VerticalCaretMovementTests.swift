@@ -88,6 +88,73 @@ struct VerticalCaretMovementTests {
         }
     }
 
+    // MARK: Cards
+
+    /// The line each press of ↓ (↑) puts the caret on, as the keyboard does it.
+    private func lines(_ e: ConcealedEditor, down: Bool, presses: Int) -> [Int] {
+        (0..<presses).map { _ in
+            e.key { e.textView.doCommand(by: down ? #selector(NSResponder.moveDown(_:)) : #selector(NSResponder.moveUp(_:))) }
+            return ConcealedEditing.line(at: e.caret, in: e.storage).range.location
+        }
+    }
+
+    @Test(arguments: [":::card orange 名前", ":::card blue ", ":::card"], ["おわり", "", ":::card red B\n別\n:::"])
+    func arrowsGoThroughACardAndPastItsClosingLine(open: String, after: String) {
+        withEditor("本文\n" + open + "\n- [/] 一行目\n二行目\n:::\n" + after) { e in
+            let title = e.index(of: open), first = e.index(of: "- [/]"), second = e.index(of: "二行目")
+            let below = e.index(of: "二行目\n:::\n") + ("二行目\n:::\n" as NSString).length
+            placeCaret(at: 0, in: e)
+            #expect(lines(e, down: true, presses: 4) == [title, first, second, below])
+            #expect(lines(e, down: false, presses: 4) == [second, first, title, 0])
+            // Never on a hidden line, and never inside the opening line's syntax.
+            for start in [e.index(of: "一行目") + 1, below] {
+                for down in [true, false] {
+                    placeCaret(at: start, in: e)
+                    for _ in 0..<4 {
+                        e.key { e.textView.doCommand(by: down ? #selector(NSResponder.moveDown(_:)) : #selector(NSResponder.moveUp(_:))) }
+                        let line = ConcealedEditing.line(at: e.caret, in: e.storage)
+                        #expect(line.kind != .cardClose, "from \(start), down \(down)")
+                        #expect(e.caret >= line.contentStart, "from \(start), down \(down)")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func arrowsKeepTheirColumnAcrossACard() {
+        withEditor("あいうえおかきくけこ\n:::card orange 名前\n一二三四五六七八九十\n:::\nさしすせそたちつてと") { e in
+            let start = e.index(of: "えお")
+            placeCaret(at: start, in: e)
+            let x = e.x(at: start)
+            _ = lines(e, down: true, presses: 3)
+            #expect(ConcealedEditing.line(at: e.caret, in: e.storage).range.location == e.index(of: "さしすせそ"))
+            #expect(abs(e.x(at: e.caret) - x) < 8)   // the same place across, not the start or the end of the line
+            _ = lines(e, down: false, presses: 1)
+            #expect(ConcealedEditing.line(at: e.caret, in: e.storage).range.location == e.index(of: "一二三"))
+            #expect(e.caret > e.index(of: "一二三") && e.caret < e.index(of: "九十"))
+        }
+    }
+
+    @Test func shiftDownIntoACardSelectsAllOfIt() {
+        withEditor("本文\n:::card orange 名前\n中身\n:::\nおわり") { e in
+            placeCaret(at: 0, in: e)
+            e.key { e.textView.doCommand(by: #selector(NSResponder.moveDownAndModifySelection(_:))) }
+            #expect(e.textView.selectedRange() == NSRange(location: 0, length: 3))    // the line above the card
+            e.key { e.textView.doCommand(by: #selector(NSResponder.moveDownAndModifySelection(_:))) }
+            // Reaching into the card takes the card: up to the line after it.
+            #expect(e.textView.selectedRange() == NSRange(location: 0, length: e.index(of: "おわり")))
+            e.key { e.textView.deleteBackward(nil) }
+            #expect(e.text == "おわり")
+        }
+        // Deleting the line above a card, with its line break, leaves the card as it is.
+        withEditor("本文\n:::card orange 名前\n中身\n:::\nおわり") { e in
+            e.textView.setSelectedRange(NSRange(location: 0, length: 3))
+            e.key { e.textView.deleteBackward(nil) }
+            #expect(e.text == ":::card orange 名前\n中身\n:::\nおわり")
+            #expect(e.layoutManager.cardGeometries().count == 1)
+        }
+    }
+
     @Test func upArrowWorksWithMarkdownShown() {
         withEditor("\n## 見出し\n本文") { e in
             e.setConceals(false)

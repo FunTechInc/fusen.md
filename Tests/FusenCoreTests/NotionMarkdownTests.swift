@@ -166,7 +166,9 @@ struct NotionMarkdownTests {
         #expect(NotionMarkdown.fromNotion("[https://a.b/\\~c](https://a.b/~c) と [ラベル\\*](https://a.b)") ==
                 "https://a.b/~c と [ラベル*](https://a.b)")
         #expect(NotionMarkdown.fromNotion("- [ ] a\n\t- [x] b") == "- [ ] a\n\t- [x] b")
-        #expect(NotionMarkdown.fromNotion("<callout icon=\"💡\">\n\t中身\n</callout>") == "<callout icon=\"💡\">\n\t中身\n</callout>")
+        // A callout is a card (see NotionCardTests); tags the app does not know stay as they are.
+        #expect(NotionMarkdown.fromNotion("<callout icon=\"💡\">\n\t中身\n</callout>") == ":::card default \n中身\n:::")
+        #expect(NotionMarkdown.fromNotion("<details>\n<summary>見出し</summary>\n\t中身\n</details>") == "<details>\n<summary>見出し</summary>\n\t中身\n</details>")
     }
 
     /// Representative notes: exporting and importing again gives the note back, normalized the way

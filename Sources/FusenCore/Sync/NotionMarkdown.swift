@@ -24,7 +24,8 @@ enum NotionMarkdown {
     // Same patterns as the block regexes in MarkdownStyler.
     private static let headingPrefix = makeRegex(#"^ {0,3}#{1,6}(?:[ \t]+|$)"#)
     private static let quotePrefix = makeRegex(#"^ {0,3}(?:>[ \t]+)+|^ {0,3}>[ \t]*$"#)
-    private static let taskPrefix = makeRegex(#"^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\](?:[ \t]+|$)"#)
+    private static let taskPrefix = makeRegex(#"^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[("# + TaskState.characterClass
+                                              + #")\](?:[ \t]+|$)"#)
     private static let listPrefix = makeRegex(#"^([ \t]*)(?:[-*+]|(\d{1,9})[.)])(?:[ \t]+|$)"#)
     /// The part of a link after its label, as MarkdownStyler matches it: `](target "title")`.
     private static let linkTail = makeRegex(#"\]\(([^()\s]+)(?:[ \t]+"[^"\n]*")?\)"#)
@@ -58,6 +59,10 @@ enum NotionMarkdown {
         var blankLines = 0
         /// The fence written for the code block being exported (a backtick fence, also for `~~~`).
         var openFence: String?
+        /// How deep the card being exported is in Notion: its blocks are the children of a callout (which
+        /// is the child of a column, in a row), one tab per level. 0 outside a card.
+        var base = 0
+        var inRow = false
 
         init(storage: NSTextStorage) {
             self.storage = storage
@@ -91,7 +96,7 @@ enum NotionMarkdown {
 
             switch kind {
             case .code:
-                lines.append(raw) // literal, never escaped
+                lines.append(String(repeating: "\t", count: base) + raw) // literal, never escaped
             case .fence:
                 fence(raw, next: next)
                 previous = (0, false)
@@ -115,15 +120,57 @@ enum NotionMarkdown {
                 quote = (quote ?? []) + [prefix + inline(content)]
             case .bullet, .ordered, .task, .text:
                 listOrText(range, raw: raw, kind: kind)
+            case .rowOpen:
+                // Cards side by side: columns, each holding one card.
+                open("<columns>", depth: 0)
+                inRow = true
+            case .rowClose:
+                close("</columns>", depth: 0)
+                inRow = false
+                previous = (0, false)
+            case .cardOpen:
+                // A card is a callout in its color; its title is the callout's own text, in bold.
+                let parts = CardSyntax.parseOpen(ns, line: range)
+                let depth = inRow ? 2 : 0
+                if inRow { open("<column>", depth: 1) }
+                open(NotionMarkdown.calloutTag(parts.color), depth: depth)
+                base = depth + 1
+                previous = nil
+                let title = ns.substring(with: parts.title).trimmingCharacters(in: .whitespaces)
+                if !title.isEmpty {
+                    emit("**" + NotionMarkdown.escape(title) + "**", depth: 0)
+                    previous = (0, false)
+                }
+            case .cardClose:
+                let depth = base - 1
+                base = 0
+                close("</callout>", depth: depth)
+                if inRow { close("</column>", depth: 1) }
+                previous = (0, false)
             }
+        }
+
+        /// The opening tag of a callout or of columns, after the blank lines waiting before it.
+        private mutating func open(_ tag: String, depth: Int) {
+            let indentation = String(repeating: "\t", count: depth)
+            lines += Array(repeating: indentation + NotionMarkdown.emptyBlock, count: blankLines)
+            blankLines = 0
+            lines.append(indentation + tag)
+        }
+
+        /// A closing tag. Blank lines at the end of what it closes are dropped, as at the end of the note.
+        private mutating func close(_ tag: String, depth: Int) {
+            blankLines = 0
+            lines.append(String(repeating: "\t", count: depth) + tag)
         }
 
         /// Fences are always top level (an indented fence would become a child block in Notion) and
         /// always backtick fences, the only kind the format documents.
         private mutating func fence(_ raw: String, next: Int) {
             let text = String(raw.drop { $0 == " " || $0 == "\t" }).trimmingTrailingWhitespace
+            let indentation = String(repeating: "\t", count: base) // in a card: the callout's child
             if let fence = openFence {
-                lines.append(fence) // the closing fence matches the one written for the opening
+                lines.append(indentation + fence) // the closing fence matches the one written for the opening
                 openFence = nil
                 return
             }
@@ -142,7 +189,7 @@ enum NotionMarkdown {
                 info = ""
             }
             emit(fence + info, depth: 0)
-            if let firstLine { lines.append(firstLine) }
+            if let firstLine { lines.append(indentation + firstLine) }
             openFence = fence
         }
 
@@ -166,11 +213,15 @@ enum NotionMarkdown {
             }
             let text = ns as String
             var marker = ""
+            var color = ""
             var indentation = NSRange(location: range.location, length: 0)
             var content = range
             if kind == .task, let m = NotionMarkdown.taskPrefix.firstMatch(in: text, range: range) {
                 indentation = m.range(at: 1)
-                marker = ns.substring(with: m.range(at: 2)) == " " ? "- [ ] " : "- [x] "
+                // Waiting and in progress are not done: Notion gets them unchecked, in the signal's color.
+                let state = TaskState(character: ns.character(at: m.range(at: 2).location)) ?? .todo
+                marker = state == .done ? "- [x] " : "- [ ] "
+                if let name = NotionMarkdown.signalColor(state) { color = " {color=\"\(name)\"}" }
                 content = NSRange(location: NSMaxRange(m.range), length: NSMaxRange(range) - NSMaxRange(m.range))
             } else if kind == .bullet || kind == .ordered, let m = NotionMarkdown.listPrefix.firstMatch(in: text, range: range) {
                 indentation = m.range(at: 1)
@@ -185,7 +236,7 @@ enum NotionMarkdown {
             // Notion nests with tabs, one level deeper than the parent at most.
             let limit = previous.map { $0.canHaveChildren ? $0.depth + 1 : $0.depth } ?? 0
             let depth = min(NotionMarkdown.depth(of: ns.substring(with: indentation)), limit)
-            emit(marker + NotionMarkdown.escapingBlockStart(inline(content)), depth: depth)
+            emit(marker + NotionMarkdown.escapingBlockStart(inline(content)) + color, depth: depth)
             previous = (depth, true)
         }
 
@@ -198,10 +249,10 @@ enum NotionMarkdown {
             quote = nil
         }
 
-        /// Appends a block at `depth`, after the blank lines waiting before it (at the same depth, so
-        /// that they and the block share a parent).
+        /// Appends a block at `depth` — in a card, that deep inside the card's callout — after the blank
+        /// lines waiting before it (at the same depth, so that they and the block share a parent).
         private mutating func emit(_ block: String, depth: Int) {
-            let indentation = String(repeating: "\t", count: depth)
+            let indentation = String(repeating: "\t", count: base + depth)
             lines += Array(repeating: indentation + NotionMarkdown.emptyBlock, count: blankLines)
             blankLines = 0
             lines.append(indentation + block)
@@ -265,6 +316,25 @@ enum NotionMarkdown {
             else { return nil }
             return (NSRange(location: start + 1, length: close.location - start - 1),
                     ns.substring(with: m.range(at: 1)), m.range)
+        }
+    }
+
+    // MARK: Cards and signals
+
+    /// The icon of the callout a card becomes (a callout always has one).
+    static let cardIcon = "📌"
+
+    /// A card is a callout with the card's color as its background (none for the default color).
+    static func calloutTag(_ color: CardColor) -> String {
+        color == .default ? "<callout icon=\"\(cardIcon)\">" : "<callout icon=\"\(cardIcon)\" color=\"\(color.rawValue)_bg\">"
+    }
+
+    /// The color of a to-do that is in progress (the ring's blue) or waiting (the pause mark's pink).
+    static func signalColor(_ state: TaskState) -> String? {
+        switch state {
+        case .doing: "blue"
+        case .waiting: "pink"
+        case .todo, .done: nil
         }
     }
 
@@ -340,7 +410,15 @@ enum NotionMarkdown {
         var fence: (character: Character, length: Int)?
         var text: [String] = []
         var nestedCode = false
-        for line in markdown.components(separatedBy: "\n") {
+        // What becomes a card, a row of cards or a signal is not Notion-only: only what is left over.
+        let converted = cardLines(markdown.components(separatedBy: "\n"))
+        let lines = converted.lines.compactMap { line -> String? in
+            guard case .notion(let line) = line else { return nil }
+            let body = String(line.drop { $0 == "\t" || $0 == " " })
+            let prefix = blockPrefix(of: body)
+            return signalToDo(prefix: prefix, content: String(body.dropFirst(prefix.count))).map { $0.prefix + $0.content } ?? line
+        }
+        for line in lines {
             let body = String(line.drop { $0 == "\t" || $0 == " " })
             if let open = fence {
                 if let close = fenceRun(body), close.character == open.character, close.length >= open.length {
@@ -379,6 +457,8 @@ enum NotionMarkdown {
             ("ブロック内の改行", #"(?m)^\t*#{1,6}[ \t][^\n]*<br"#, withoutTargets),
         ]
         var names = kinds.filter { $0.in.range(of: $0.pattern, options: .regularExpression) != nil }.map(\.name)
+        // Columns that are not cards side by side come in one below the other.
+        if converted.flattenedColumns, !names.contains("段組み") { names.append("段組み") }
         if nestedCode { names.append("入れ子のコードブロック") }
         var seen = Set<String>()
         return names.filter { seen.insert($0).inserted }
@@ -395,13 +475,25 @@ enum NotionMarkdown {
     /// and link targets are copied verbatim (parentheses in a target are percent-encoded, which the
     /// app's links need); a link whose text is its URL becomes a bare URL when the app shows it as one.
     /// A code block nested under a list item comes back at the top level. Tags the app does not know
-    /// (callouts, toggles, …) are left as they are.
+    /// (toggles, tables, …) are left as they are.
+    ///
+    /// A callout becomes a card — its color the card's, its own text the card's title — and columns that
+    /// each hold one callout become a row of cards (other columns come in one below the other). A to-do
+    /// in the color of a signal (blue: in progress, pink: waiting) becomes that signal.
     static func fromNotion(_ markdown: String) -> String {
         let styler = MarkdownStyler()
         var out: [String] = []
         var fence: (character: Character, length: Int, indentation: String)?
         var inEquation = false
-        for line in markdown.components(separatedBy: "\n") {
+        for converted in cardLines(markdown.components(separatedBy: "\n")).lines {
+            let line: String
+            switch converted {
+            case .app(let text):
+                out.append(text) // a line around a card, written as the app writes it
+                continue
+            case .notion(let text):
+                line = text
+            }
             let indentation = String(line.prefix { $0 == "\t" || $0 == " " })
             let body = String(line.dropFirst(indentation.count))
             if let open = fence {
@@ -438,13 +530,155 @@ enum NotionMarkdown {
                 }
                 continue
             }
-            let prefix = blockPrefix(of: body)
-            let parts = lineBreaks(String(body.dropFirst(prefix.count)))
+            var prefix = blockPrefix(of: body)
+            var content = String(body.dropFirst(prefix.count))
+            if let signal = signalToDo(prefix: prefix, content: content) { (prefix, content) = signal }
+            let parts = lineBreaks(content)
             out.append(appLine(indentation, prefix, parts[0], styler: styler))
             let continuation = prefix.isEmpty || prefix.hasPrefix("#") ? indentation : indentation + "\t"
             out += parts.dropFirst().map { appLine(continuation, "", $0, styler: styler, textOnly: true) }
         }
         return out.joined(separator: "\n")
+    }
+
+    // MARK: Import: cards and signals
+
+    /// A line of Notion's Markdown on its way into the app: still Notion's, or already the app's own.
+    private enum ImportLine: Equatable {
+        case notion(String)
+        case app(String)
+    }
+
+    private static let calloutOpen = makeRegex(#"^<callout(?:\s[^>]*)?>\s*$"#)
+    private static let colorAttribute = makeRegex(#"\scolor="([a-z_]+)""#)
+    private static let unchecked = makeRegex(#"^[-*+][ \t]+\[ \][ \t]+$"#)
+    private static let signalSuffix = makeRegex(#"(?:^|[ \t])\{color="(blue|pink)(?:_bg)?"\}[ \t]*$"#)
+
+    /// An unchecked to-do in a signal's color, as that signal: "- [ ] 資料 {color="blue"}" is "- [/] 資料".
+    private static func signalToDo(prefix: String, content: String) -> (prefix: String, content: String)? {
+        let whole = NSRange(location: 0, length: (prefix as NSString).length)
+        let ns = content as NSString
+        guard unchecked.firstMatch(in: prefix, range: whole) != nil,
+              let m = signalSuffix.firstMatch(in: content, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let state = ns.substring(with: m.range(at: 1)) == "blue" ? TaskState.doing : .waiting
+        return (prefix.replacingOccurrences(of: "[ ]", with: "[\(state.rawValue)]"), ns.substring(to: m.range.location))
+    }
+
+    /// Turns callouts into cards and columns of callouts into rows of cards: their tags become the lines
+    /// the app writes around a card and a row, and their children lose the indentation the tags gave
+    /// them. Everything else is passed on as it is. `flattenedColumns`: some columns were not cards side
+    /// by side (they hold other blocks, or more than one); what they hold comes one below the other.
+    private static func cardLines(_ lines: [String]) -> (lines: [ImportLine], flattenedColumns: Bool) {
+        var flattened = false
+        func tabs(_ line: String) -> Int { line.prefix { $0 == "\t" }.count }
+        func unindented(_ line: String) -> String { String(line.drop { $0 == "\t" || $0 == " " }) }
+        func dedent(_ line: String, _ depth: Int) -> String { String(line.dropFirst(min(depth, tabs(line)))) }
+        func isCalloutOpen(_ line: String) -> Bool {
+            let body = unindented(line)
+            return calloutOpen.firstMatch(in: body, range: NSRange(location: 0, length: (body as NSString).length)) != nil
+        }
+        /// The index of the line that closes the tag opened at `start` (`open` says what opens another one inside).
+        func closing(_ tag: String, from start: Int, in lines: [String], open: (String) -> Bool) -> Int? {
+            var depth = 0
+            var fence: (character: Character, length: Int)?
+            for index in (start + 1)..<lines.count {
+                let body = unindented(lines[index])
+                if let opened = fence {
+                    if let run = fenceRun(body), run.character == opened.character, run.length >= opened.length { fence = nil }
+                    continue
+                }
+                if let run = fenceRun(body) { fence = run; continue }
+                if open(lines[index]) { depth += 1 } else if body == tag {
+                    if depth == 0 { return index }
+                    depth -= 1
+                }
+            }
+            return nil
+        }
+
+        /// `depth`: the indentation the enclosing tags gave these lines. In a card nothing more is
+        /// converted: cards do not nest.
+        func convert(_ lines: [String], depth: Int, inCard: Bool) -> [ImportLine] {
+            var out: [ImportLine] = []
+            var fence: (character: Character, length: Int)?
+            var index = 0
+            while index < lines.count {
+                let line = lines[index]
+                let body = unindented(line)
+                if let opened = fence {
+                    if let run = fenceRun(body), run.character == opened.character, run.length >= opened.length { fence = nil }
+                } else if let run = fenceRun(body) {
+                    fence = run
+                } else if !inCard, isCalloutOpen(line), let end = closing("</callout>", from: index, in: lines, open: isCalloutOpen) {
+                    out += card(open: line, children: Array(lines[(index + 1)..<end]))
+                    index = end + 1
+                    continue
+                } else if !inCard, body == "<columns>",
+                          let end = closing("</columns>", from: index, in: lines, open: { unindented($0) == "<columns>" }) {
+                    out += columns(Array(lines[(index + 1)..<end]), depth: tabs(line) + 1)
+                    index = end + 1
+                    continue
+                }
+                out.append(.notion(dedent(line, depth)))
+                index += 1
+            }
+            return out
+        }
+
+        /// A callout as a card. Its own text — the first line in it — is the card's title if it is all
+        /// bold, which is how the app sends a title; any other first line is the first line of the
+        /// card's text, so a card without a title comes back as it was sent.
+        func card(open: String, children: [String]) -> [ImportLine] {
+            let depth = tabs(open) + 1
+            let tag = unindented(open) as NSString
+            var color = CardColor.default
+            if let m = colorAttribute.firstMatch(in: tag as String, range: NSRange(location: 0, length: tag.length)) {
+                let name = tag.substring(with: m.range(at: 1))
+                color = CardColor(rawValue: name.hasSuffix("_bg") ? String(name.dropLast(3)) : name) ?? .default
+            }
+            var children = children
+            var title = ""
+            if let first = children.first, tabs(first) <= depth {
+                let text = unindented(first)
+                let isRichText = !text.isEmpty && blockPrefix(of: text).isEmpty && !text.hasPrefix("<") && !text.hasPrefix(">")
+                    && fenceRun(text) == nil && text != "$$"
+                if isRichText, text.count > 4, text.hasPrefix("**"), text.hasSuffix("**"),
+                   !text.dropFirst(2).dropLast(2).contains("**") {
+                    title = unescapeAll(String(text.dropFirst(2).dropLast(2)))
+                    children.removeFirst()
+                }
+            }
+            return [.app(CardSyntax.openLine(color: color, title: title))] + convert(children, depth: depth, inCard: true)
+                + [.app(CardSyntax.closeMarker)]
+        }
+
+        /// Columns as a row of cards, if each of them holds one callout and nothing else.
+        func columns(_ lines: [String], depth: Int) -> [ImportLine] {
+            var cells: [[String]] = []
+            var index = 0
+            while index < lines.count {
+                if unindented(lines[index]) == "<column>",
+                   let end = closing("</column>", from: index, in: lines, open: { unindented($0) == "<column>" }) {
+                    cells.append(Array(lines[(index + 1)..<end]))
+                    index = end + 1
+                } else {
+                    index += 1
+                }
+            }
+            let cards = cells.map { cell -> [ImportLine]? in
+                guard let first = cell.first, isCalloutOpen(first),
+                      closing("</callout>", from: 0, in: cell, open: isCalloutOpen) == cell.count - 1 else { return nil }
+                return card(open: first, children: Array(cell.dropFirst().dropLast()))
+            }
+            if !cards.isEmpty, cards.allSatisfy({ $0 != nil }) {
+                return [.app(CardSyntax.rowOpenMarker)] + cards.flatMap { $0 ?? [] } + [.app(CardSyntax.rowCloseMarker)]
+            }
+            flattened = true
+            return cells.flatMap { convert($0, depth: depth + 1, inCard: false) }
+        }
+
+        let result = convert(lines, depth: 0, inCard: false)
+        return (result, flattened)
     }
 
     private static let notionBlockPrefix = makeRegex(#"^(?:#{1,6}[ \t]+|[-*+][ \t]+\[[ xX]\][ \t]+|[-*+][ \t]+|\d{1,9}[.)][ \t]+)"#)

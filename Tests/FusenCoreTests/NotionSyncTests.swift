@@ -238,13 +238,18 @@ struct NotionSyncTests {
         <callout icon="💡" color="yellow_bg">
         \t大事
         </callout>
+        <details>
+        <summary>トグル</summary>
+        </details>
         <span color="red">赤い字</span>
         ```
-        <callout> in code is not a callout
+        <details> in code is not a toggle
         ```
         """)
         let result = try await sync.fetchImport(id)
-        #expect(result.notionOnly == ["コールアウト", "文字色・下線"])
+        // (The callout comes in as a card.)
+        #expect(result.notionOnly == ["トグル", "文字色・下線"])
+        #expect(result.text.hasPrefix(":::card yellow \n大事\n:::\n"))
     }
 
     @Test func importRefusesPartialPagesAndUnsentNotes() async throws {
@@ -890,7 +895,9 @@ struct NotionSyncTests {
                                  timing: NotionSync.Timing(debounce: 0.05, maxWait: 0.2), autoWake: true)
         live.start()
         addNote("自動で送られるメモ")
-        let deadline = ContinuousClock.now + .seconds(5)
+        // Far above what the timer needs: the tests run in parallel on the main actor, and this one gets
+        // its turn again only after those that are waiting in front of it.
+        let deadline = ContinuousClock.now + .seconds(30)
         while !api.calls.contains(where: isCreate), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

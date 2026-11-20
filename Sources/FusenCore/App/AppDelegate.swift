@@ -423,6 +423,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     - [x] 完了したタスクは取り消し線
     - 箇条書きは Return で自動継続（空の項目で Return すると終了）
 
+    :::card orange プロジェクト
+    - [/] 進行中のタスク（クリックで完了）
+    - [>] 待機のタスク（クリックで進行中に。⌥クリックで待機にする・外す）
+    - [ ] カードは枠をつかんで動かせます
+    :::
+
     > 消してしまった文章や閉じたメモは「ファイル > メモの履歴…」から戻せます。
     [Apple](https://www.apple.com) は ⌘クリックで開きます。
     """

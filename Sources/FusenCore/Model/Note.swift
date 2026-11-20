@@ -26,6 +26,26 @@ enum NoteColor: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// 強調表示: what a note emphasizes while one of its two buttons is on — only the to-dos in progress, or
+/// only the waiting ones. Everything else is dimmed on darkened paper.
+enum NoteFocus: String, Codable, CaseIterable, Sendable {
+    case doing, waiting
+
+    var state: TaskState {
+        switch self {
+        case .doing: .doing
+        case .waiting: .waiting
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .doing: "進行中だけを強調"
+        case .waiting: "待機だけを強調"
+        }
+    }
+}
+
 /// Everything about a note except its text (which lives in notes/<id>.md).
 struct NoteMeta: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
@@ -39,6 +59,8 @@ struct NoteMeta: Codable, Identifiable, Equatable, Sendable {
     var modified: Date
     /// Set while the note is in the trash. Its text stays in notes/<id>.md so it can be restored.
     var deletedAt: Date?
+    /// 強調表示, if it is on. Only how the note is shown: its text is not affected.
+    var focus: NoteFocus?
 
     var isDeleted: Bool { deletedAt != nil }
 
@@ -66,17 +88,30 @@ struct NoteMeta: Codable, Identifiable, Equatable, Sendable {
         created = try c.decodeIfPresent(Date.self, forKey: .created) ?? Date()
         modified = try c.decodeIfPresent(Date.self, forKey: .modified) ?? created
         deletedAt = try c.decodeIfPresent(Date.self, forKey: .deletedAt)
+        focus = try? c.decodeIfPresent(NoteFocus.self, forKey: .focus) // an unknown value: off
     }
 }
 
 enum NoteTitle {
-    private static let leadingMarker = #"^\s*(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d{1,9}[.)]\s+)"#
+    private static let leadingMarker = #"^\s*(#{1,6}\s+|>\s*|[-*+]\s+(\["# + TaskState.characterClass + #"\]\s+)?|\d{1,9}[.)]\s+)"#
 
     /// First non-empty line without its Markdown block marker (Window menu, Mission Control, history list).
+    /// A card's opening line counts with its title; the lines that are only card syntax do not count.
     static func derive(from text: String) -> String {
-        let firstLine = text.split(whereSeparator: \.isNewline)
-            .first { !$0.allSatisfy(\.isWhitespace) }
-            .map(String.init) ?? ""
+        var firstLine = ""
+        for line in text.split(whereSeparator: \.isNewline) where !line.allSatisfy(\.isWhitespace) {
+            let ns = String(line) as NSString
+            let whole = NSRange(location: 0, length: ns.length)
+            if CardSyntax.isStructureOnly(ns as String, whole) { continue }
+            if CardSyntax.isOpen(ns as String, whole) {
+                let title = ns.substring(with: CardSyntax.parseOpen(ns, line: whole).title)
+                if title.allSatisfy(\.isWhitespace) { continue }
+                firstLine = title
+            } else {
+                firstLine = ns as String
+            }
+            break
+        }
         let title = firstLine
             .replacingOccurrences(of: leadingMarker, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)

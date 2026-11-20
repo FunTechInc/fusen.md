@@ -19,8 +19,8 @@ enum ConcealedEditing {
         var content: NSRange { NSRange(location: contentStart, length: contentsEnd - contentStart) }
         var hasNewline: Bool { NSMaxRange(range) > contentsEnd }
         var isListItem: Bool { kind == .bullet || kind == .ordered || kind == .task }
-        /// Not a divider or code: the line holds Markdown text.
-        var holdsInlineText: Bool { kind != .rule && kind != .code && kind != .fence }
+        /// Not a divider, code or a line around a card: the line holds Markdown text.
+        var holdsInlineText: Bool { kind != .rule && kind != .code && kind != .fence && !kind.isCardStructure }
     }
 
     /// An inline span (bold, italic, strike, code, link) with its delimiters.
@@ -100,6 +100,166 @@ enum ConcealedEditing {
         return p
     }
 
+    // MARK: Cards
+
+    /// A card (see CardSyntax): its opening line with the title, its lines of text, its closing line.
+    struct Card {
+        /// The opening line through the closing line (with its line break, if it has one).
+        let range: NSRange
+        let open: Line
+        let close: Line
+
+        /// The lines of text between the two; empty for a card without any.
+        var content: NSRange { NSRange(location: NSMaxRange(open.range), length: close.range.location - NSMaxRange(open.range)) }
+        var title: NSRange { open.content }
+    }
+
+    /// The card that the character at `location` belongs to.
+    static func card(at location: Int, in s: NSTextStorage) -> Card? {
+        guard location >= 0, location < s.length else { return nil }
+        var range = NSRange()
+        guard s.attribute(.mdCard, at: location, longestEffectiveRange: &range, in: NSRange(location: 0, length: s.length)) != nil
+        else { return nil }
+        let open = line(at: range.location, in: s), close = line(at: NSMaxRange(range) - 1, in: s)
+        guard open.kind == .cardOpen, close.kind == .cardClose, open.range.location < close.range.location else { return nil }
+        return Card(range: range, open: open, close: close)
+    }
+
+    /// The card whose title or text the caret at `p` is in.
+    static func card(around p: Int, in s: NSTextStorage) -> Card? {
+        card(at: line(at: p, in: s).range.location, in: s)
+    }
+
+    /// Where the caret is when it comes into a card from below: the end of its last line of text (or of
+    /// its title, if it has no text).
+    static func lastCaret(in card: Card, _ s: NSTextStorage) -> Int {
+        line(at: card.close.range.location - 1, in: s).contentsEnd
+    }
+
+    /// A row of cards: "::::columns", the cards, "::::".
+    struct Row {
+        /// The first of its lines through the last (with its line break, if it has one).
+        let range: NSRange
+        let open: Line
+        let close: Line
+    }
+
+    /// The row that the character at `location` belongs to.
+    static func row(at location: Int, in s: NSTextStorage) -> Row? {
+        guard location >= 0, location < s.length else { return nil }
+        var range = NSRange()
+        guard s.attribute(.mdCardRow, at: location, longestEffectiveRange: &range, in: NSRange(location: 0, length: s.length)) != nil
+        else { return nil }
+        let open = line(at: range.location, in: s), close = line(at: NSMaxRange(range) - 1, in: s)
+        guard open.kind == .rowOpen, close.kind == .rowClose else { return nil }
+        return Row(range: range, open: open, close: close)
+    }
+
+    /// The cards of a row, left to right.
+    static func cards(in row: Row, _ s: NSTextStorage) -> [Card] {
+        var cards: [Card] = []
+        var location = NSMaxRange(row.open.range)
+        while location < row.close.range.location, let card = card(at: location, in: s) {
+            cards.append(card)
+            location = NSMaxRange(card.range)
+        }
+        return cards
+    }
+
+    /// The first place for the caret on the line that starts at `index` or, if that line shows nothing
+    /// (a card's closing line, the lines around a row), on the first line after it that does: at the
+    /// start of the line's text. nil if there is no such line.
+    static func caretPosition(atOrAfter index: Int, in s: NSTextStorage) -> Int? {
+        var i = index
+        while i < s.length {
+            let line = line(at: i, in: s)
+            guard line.kind.isHiddenLine else { return line.contentStart }
+            guard line.hasNewline else { return nil }
+            i = NSMaxRange(line.range)
+        }
+        return i == s.length ? s.length : nil
+    }
+
+    /// The last place for the caret before the line that starts at `index`: the end of the nearest line
+    /// above that shows something. nil if there is none.
+    static func caretPosition(before index: Int, in s: NSTextStorage) -> Int? {
+        var i = index
+        while i > 0 {
+            let line = line(at: i - 1, in: s)
+            guard line.kind.isHiddenLine else { return line.contentsEnd }
+            i = line.range.location
+        }
+        return nil
+    }
+
+    /// The parts of a card that hold it together: the syntax of its opening line, the line break after
+    /// its title, and from the line break before its closing line to its end. Deleting any of them would
+    /// leave half a card, or join text to one of its two lines.
+    private static func structure(of card: Card, in s: NSTextStorage) -> [NSRange] {
+        let lastBreak = lastCaret(in: card, s)
+        return [card.open.prefix ?? NSRange(location: card.open.range.location, length: 0),
+                NSRange(location: card.open.contentsEnd, length: NSMaxRange(card.open.range) - card.open.contentsEnd),
+                NSRange(location: lastBreak, length: NSMaxRange(card.range) - lastBreak)]
+    }
+
+    /// A selection takes a card whole or leaves its structure alone: one that reaches over a part of a
+    /// card's structure grows to hold all of the card, as selecting across blocks does in Notion.
+    static func expandingOverCards(_ r: NSRange, in s: NSTextStorage) -> NSRange {
+        var result = r
+        var location = r.location
+        while location < NSMaxRange(result), location < s.length {
+            var run = NSRange()
+            let value = s.attribute(.mdCard, at: location, longestEffectiveRange: &run, in: NSRange(location: 0, length: s.length))
+            location = max(NSMaxRange(run), location + 1)
+            guard value != nil, let card = card(at: run.location, in: s),
+                  NSIntersectionRange(result, card.range) != card.range,
+                  structure(of: card, in: s).contains(where: { NSIntersectionRange(result, $0).length > 0 }) else { continue }
+            result = NSUnionRange(result, card.range)
+        }
+        // A row: one of its own two lines, or all of its cards, takes the row whole (no row without cards,
+        // and no half of one, is left behind).
+        location = result.location
+        while location < NSMaxRange(result), location < s.length {
+            var run = NSRange()
+            let value = s.attribute(.mdCardRow, at: location, longestEffectiveRange: &run, in: NSRange(location: 0, length: s.length))
+            location = max(NSMaxRange(run), location + 1)
+            guard value != nil, let row = row(at: run.location, in: s), NSIntersectionRange(result, row.range) != row.range else { continue }
+            let cards = cards(in: row, s)
+            let touchesItsLines = NSIntersectionRange(result, row.open.range).length > 0 || NSIntersectionRange(result, row.close.range).length > 0
+            let holdsAllCards = !cards.isEmpty && cards.allSatisfy { NSIntersectionRange(result, $0.range) == $0.range }
+            if touchesItsLines || holdsAllCards { result = NSUnionRange(result, row.range) }
+        }
+        return result
+    }
+
+    /// The number MarkdownStyler gave the card (see CardArrangement).
+    static func number(of card: Card, in s: NSTextStorage) -> Int? {
+        s.attribute(.mdCard, at: card.range.location, effectiveRange: nil) as? Int
+    }
+
+    /// The change that makes the note `arrangement`, with the caret at `caret` (in the new text).
+    static func edit(to arrangement: CardArrangement, caret: Int, in s: NSTextStorage) -> Edit {
+        minimal(Edit(range: NSRange(location: 0, length: s.length), string: arrangement.text, caret: caret), in: s)
+    }
+
+    /// Taking a card away and keeping what is in it: its title becomes a line of text above its text. (A
+    /// card in a row leaves the row; its text goes under the row.)
+    static func unwrapping(_ card: Card, in s: NSTextStorage) -> Edit? {
+        guard let number = number(of: card, in: s) else { return nil }
+        var arrangement = CardArrangement(s)
+        guard let piece = arrangement.unwrap(card: number) else { return nil }
+        return edit(to: arrangement, caret: arrangement.offset(ofPiece: piece), in: s)
+    }
+
+    /// Removing a card with everything in it.
+    static func removing(_ card: Card, in s: NSTextStorage) -> Edit? {
+        guard let number = number(of: card, in: s) else { return nil }
+        var arrangement = CardArrangement(s)
+        let caret = arrangement.place(ofCard: number).map { arrangement.offset(ofPiece: $0.piece) } ?? card.range.location
+        arrangement.remove(card: number)
+        return edit(to: arrangement, caret: min(caret, (arrangement.text as NSString).length), in: s)
+    }
+
     // MARK: Spans
 
     /// The span whose delimiter is at `i`.
@@ -150,8 +310,17 @@ enum ConcealedEditing {
     static func adjustCaret(_ p: Int, from old: Int, in s: NSTextStorage) -> Int {
         guard s.length > 0 else { return p }
         let line = line(at: p, in: s)
+        if line.kind.isHiddenLine {
+            // A card's closing line and the lines around a row of cards show nothing. Going forwards the
+            // caret passes them, to the next line that shows something; otherwise (and if no line
+            // follows) it goes back to the end of the text before them.
+            let after = line.hasNewline ? caretPosition(atOrAfter: NSMaxRange(line.range), in: s) : nil
+            let before = caretPosition(before: line.range.location, in: s)
+            return (p > old ? after ?? before : before ?? after) ?? p
+        }
         if let prefix = line.prefix, p >= prefix.location, p < NSMaxRange(prefix) {
-            if old == NSMaxRange(prefix), p == old - 1, prefix.location > 0 { return self.line(at: prefix.location - 1, in: s).contentsEnd }
+            // (The line above that shows something: not a card's closing line or a row's own lines.)
+            if old == NSMaxRange(prefix), p == old - 1, let above = caretPosition(before: prefix.location, in: s) { return above }
             return NSMaxRange(prefix)
         }
         guard p > line.range.location, p < line.contentsEnd else { return p }
@@ -177,7 +346,7 @@ enum ConcealedEditing {
         if let prefix = first.prefix, start > prefix.location, start < NSMaxRange(prefix) { start = prefix.location }
         let last = line(at: end, in: s)
         if let prefix = last.prefix, end > prefix.location, end < NSMaxRange(prefix) { end = NSMaxRange(prefix) }
-        return NSRange(location: start, length: end - start)
+        return expandingOverCards(NSRange(location: start, length: end - start), in: s)
     }
 
     /// Where one press of → (or ←) takes the caret from `p`: past one visible character and the hidden
@@ -195,7 +364,7 @@ enum ConcealedEditing {
             let line = line(at: q, in: s)
             if let prefix = line.prefix, q >= prefix.location, q < NSMaxRange(prefix) {
                 if forward { return NSMaxRange(prefix) }
-                return prefix.location > 0 ? self.line(at: prefix.location - 1, in: s).contentsEnd : p
+                return caretPosition(before: prefix.location, in: s) ?? p
             }
             guard isHidden(crossed, in: s) else {
                 // Leftwards, an escape's hidden backslash goes with its character.
@@ -246,11 +415,27 @@ enum ConcealedEditing {
         // Backspace acts on what is visible: hidden syntax right before the caret does not count.
         var q = p
         while q > line.contentStart, isHidden(q - 1, in: s) { q -= 1 }
+        // At the start of a card's title the card is taken away; its title and its text stay.
+        if line.kind == .cardOpen, q == line.contentStart, let card = card(at: line.range.location, in: s),
+           let edit = unwrapping(card, in: s) {
+            return .edit(edit)
+        }
         // At the start of a block's text the block becomes plain text (its indentation stays), as in Notion.
         if let prefix = line.prefix, q == NSMaxRange(prefix) { return .edit(removing(marker(of: line, in: s))) }
         if q == line.range.location {
             guard q > 0 else { return .nothing }
             let above = self.line(at: q - 1, in: s)
+            if above.kind.isCardStructure {
+                // The first line of a card's text, or the line after a card: the lines around the card are
+                // never joined to text. An empty line goes (not a card's only line); otherwise the caret
+                // just moves to the end of what is before it.
+                let target = caretPosition(before: line.range.location, in: s) ?? q
+                let isEmpty = line.contentsEnd == line.range.location
+                let isOnlyLine = above.kind == .cardOpen
+                    && (NSMaxRange(line.range) >= s.length || self.line(at: NSMaxRange(line.range), in: s).kind == .cardClose)
+                let range = isEmpty && !isOnlyLine ? wholeLine(line, in: s) : NSRange(location: q, length: 0)
+                return .edit(Edit(range: range, string: "", caret: target))
+            }
             if above.kind == .rule { return .edit(removing(wholeLine(above, in: s))) }
             // Joins the lines (the whole line break, "\r\n" too).
             return q == p ? nil : .edit(removing(NSRange(location: above.contentsEnd, length: q - above.contentsEnd)))
@@ -268,8 +453,16 @@ enum ConcealedEditing {
         while q < line.contentsEnd, isHidden(q, in: s), !isEscapeBackslash(q, in: s) { q += 1 }
         if q == line.contentsEnd {
             guard line.hasNewline else { return q == p ? nil : .nothing }
+            // The line break after a card's title holds the card together.
+            if line.kind == .cardOpen { return .nothing }
             if NSMaxRange(line.range) < s.length {
                 let below = self.line(at: NSMaxRange(line.range), in: s)
+                if below.kind.isCardStructure {
+                    // So do the one before its closing line and the one before the card: only an empty
+                    // line above a card goes.
+                    let isEmpty = line.contentsEnd == line.range.location
+                    return (below.kind == .cardOpen || below.kind == .rowOpen) && isEmpty ? .edit(removing(line.range)) : .nothing
+                }
                 if below.kind == .rule { return .edit(removing(wholeLine(below, in: s))) }
                 // The block below joins this line without its marker, as in Notion.
                 if let prefix = below.prefix {
@@ -295,7 +488,9 @@ enum ConcealedEditing {
         guard r.length > 0 else { return Edit(range: r, string: "", caret: r.location) }
         var r = r
         let next = line(at: NSMaxRange(r), in: s)
-        if !replacing, NSMaxRange(r) == next.range.location, next.range.location > 0, let prefix = next.prefix {
+        // (Not a card: the syntax of its opening line is half of it, and stays.)
+        if !replacing, NSMaxRange(r) == next.range.location, next.range.location > 0, let prefix = next.prefix,
+           !next.kind.isCardStructure {
             r = NSUnionRange(r, prefix)
         }
         var deleted = IndexSet(integersIn: r.location..<NSMaxRange(r))
@@ -385,8 +580,23 @@ enum ConcealedEditing {
     /// What Return at caret `p` does, or nil for a plain line break.
     static func newline(at p: Int, in s: NSTextStorage) -> Edit? {
         let line = line(at: p, in: s)
+        if line.kind == .cardOpen, line.hasNewline {
+            // At the start of a title: an empty line above the card, as above a heading. (Not in a row
+            // of cards, which holds nothing but cards.)
+            if p <= line.contentStart, line.contentStart < line.contentsEnd,
+               s.attribute(.mdCardRow, at: line.range.location, effectiveRange: nil) == nil {
+                return Edit(range: NSRange(location: line.range.location, length: 0), string: "\n", caret: p + 1)
+            }
+            // Anywhere else Return goes on to the card's text: its first line if that is empty, otherwise
+            // a new line above it.
+            let first = self.line(at: NSMaxRange(line.range), in: s)
+            let isEmpty = first.kind == .text && first.contentsEnd == first.range.location
+            return Edit(range: NSRange(location: first.range.location, length: 0), string: isEmpty ? "" : "\n",
+                        caret: first.range.location)
+        }
         guard line.holdsInlineText else { return nil }
         let ns = s.string as NSString
+        if let exit = leavingCard(from: line, in: s) { return exit }
         if let prefix = line.prefix, p <= visibleContentStart(of: line, in: s) {
             let marker = ns.substring(with: prefix)
             guard visibleContentStart(of: line, in: s) < line.contentsEnd else {
@@ -430,7 +640,28 @@ enum ConcealedEditing {
                     caret: q + (continuation as NSString).length)
     }
 
-    private static let listMarker = makeRegex(#"^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))([ \t]+)(?:\[([ xX])\]([ \t]+))?"#)
+    /// Return on the empty last line of a card's text leaves the card, as it ends a list: the caret goes
+    /// to an empty line after the card (a new one, if the line there holds something) — after the whole
+    /// row, if the card stands in one — and the line it left goes, unless it is the card's only line of text.
+    private static func leavingCard(from line: Line, in s: NSTextStorage) -> Edit? {
+        guard line.kind == .text, line.contentsEnd == line.range.location, line.hasNewline, NSMaxRange(line.range) < s.length
+        else { return nil }
+        let close = self.line(at: NSMaxRange(line.range), in: s)
+        guard close.kind == .cardClose, let card = card(at: close.range.location, in: s) else { return nil }
+        let last = row(at: card.range.location, in: s)?.close ?? close // the last line to pass
+        let ns = s.string as NSString
+        let after = last.hasNewline ? self.line(at: NSMaxRange(last.range), in: s) : nil
+        let emptyLineFollows = after.map { $0.kind == .text && $0.contentsEnd == $0.range.location } ?? false
+        let start = card.content.length == line.range.length ? close.range.location : line.range.location
+        // From the card's closing line to the end of the last line to pass: as it is.
+        let kept = ns.substring(with: NSRange(location: close.range.location, length: last.contentsEnd - close.range.location))
+        let string = kept + "\n" + (last.hasNewline && !emptyLineFollows ? "\n" : "")
+        return minimal(Edit(range: NSRange(location: start, length: NSMaxRange(last.range) - start), string: string,
+                            caret: start + (kept as NSString).length + 1), in: s)
+    }
+
+    private static let listMarker = makeRegex(#"^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))([ \t]+)(?:\[("# + TaskState.characterClass
+                                              + #")\]([ \t]+))?"#)
 
     /// A list item's prefix written for another item of the list: with the next number, and with the
     /// check box kept or emptied.

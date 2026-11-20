@@ -46,6 +46,17 @@ enum MainMenu {
         ]))
 
         // Notion's shortcuts. The actions are MarkdownTextView's (the first responder).
+        let theme = MarkdownTheme()
+        let taskStates = TaskState.allCases.enumerated().map { index, state in
+            let stateItem = item(state.title, #selector(MarkdownTextView.setTaskState(_:)), tag: index)
+            stateItem.image = TaskSignalIcon.image(state, theme: theme)
+            return stateItem
+        }
+        let cardColors = CardColor.allCases.enumerated().map { index, color in
+            let colorItem = item(color.title, #selector(MarkdownTextView.setCardColor(_:)), tag: index)
+            colorItem.image = MarkdownTextView.swatch(color)
+            return colorItem
+        }
         main.addItem(submenu("書式", [
             item("太字", #selector(MarkdownTextView.toggleBold(_:)), "b"),
             item("斜体", #selector(MarkdownTextView.toggleItalic(_:)), "i"),
@@ -54,12 +65,24 @@ enum MainMenu {
             item("リンク…", #selector(MarkdownTextView.insertLink(_:)), "k"),
             .separator(),
             item("区切り線を挿入", #selector(MarkdownTextView.insertDivider(_:))),
+            item("カードを挿入", #selector(MarkdownTextView.insertCard(_:))),
+            submenu("カードの色", cardColors),
+            item("カードを解除", #selector(MarkdownTextView.unwrapCard(_:))),
+            .separator(),
+            // The same as a click and an ⌥-click on a to-do's checkbox.
+            item("タスクを進める", #selector(MarkdownTextView.advanceTask(_:)), "\r"),
+            item("タスクを待機にする", #selector(MarkdownTextView.toggleTaskWaiting(_:)), "\r", [.command, .option]),
+            submenu("タスクの状態", taskStates),
         ]))
 
         let colorItems = NoteColor.allCases.enumerated().map { index, color in
             item(color.title, #selector(NoteWindowController.setNoteColor(_:)), "\(index + 1)", tag: index)
         }
-        main.addItem(submenu("メモ", [
+        let focusItems = NoteFocus.allCases.enumerated().map { index, focus in
+            item(focus.title, #selector(NoteWindowController.toggleFocus(_:)), tag: index)
+        }
+        main.addItem(submenu("メモ", focusItems + [
+            .separator(),
             item("常に手前に表示", #selector(NoteWindowController.toggleFloating(_:)), "f", [.command, .option]),
             item("半透明", #selector(NoteWindowController.toggleTranslucent(_:)), "t", [.command, .option]),
             item("すべてのデスクトップに表示", #selector(NoteWindowController.toggleOnAllSpaces(_:)), "a", [.command, .option]),
