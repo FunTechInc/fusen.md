@@ -206,7 +206,7 @@ struct TaskStateTests {
     @Test func notionGetsSignalsAsUncheckedToDosInTheirColors() {
         let styler = MarkdownStyler()
         #expect(NotionMarkdown.export("- [/] 進行中\n- [>] 待機\n- [x] 完了\n- [ ] 未着手", styler: styler)
-                == "- [ ] 進行中 {color=\"blue\"}\n- [ ] 待機 {color=\"pink\"}\n- [x] 完了\n- [ ] 未着手")
+                == "- [ ] 進行中 {color=\"blue\"}\n- [ ] 待機 {color=\"orange\"}\n- [x] 完了\n- [ ] 未着手")
     }
 
     // MARK: Drawing
@@ -221,27 +221,28 @@ struct TaskStateTests {
             let x = (origin.x + rect.minX + rect.width * fx) * scale, y = (origin.y + rect.minY + rect.height * fy) * scale
             return rep.colorAt(x: Int(x), y: Int(y))?.usingColorSpace(.sRGB)
         }
-        func isCyan(_ c: NSColor?) -> Bool { c.map { $0.alphaComponent > 0.5 && $0.blueComponent > 0.8 && $0.redComponent < 0.3 } ?? false }
-        func isPink(_ c: NSColor?) -> Bool { c.map { $0.alphaComponent > 0.5 && $0.redComponent > 0.8 && $0.greenComponent < 0.3 } ?? false }
+        func isBlue(_ c: NSColor?) -> Bool { c.map { $0.blueComponent > 0.8 && $0.redComponent < 0.3 && $0.greenComponent < 0.65 } ?? false }
+        func isOrange(_ c: NSColor?) -> Bool { c.map { $0.redComponent > 0.75 && $0.greenComponent > 0.3 && $0.greenComponent < 0.6 && $0.blueComponent < 0.25 } ?? false }
+        // The ring of a signal: the text color, faint (a pale gray on the view's white).
+        func isRing(_ c: NSColor?) -> Bool { c.map { $0.saturationComponent < 0.08 && $0.brightnessComponent > 0.75 && $0.brightnessComponent < 0.93 } ?? false }
         // Nothing drawn: the view's (white) background.
         func isEmpty(_ c: NSColor?) -> Bool { c.map { $0.alphaComponent < 0.1 || $0.brightnessComponent > 0.95 && $0.saturationComponent < 0.05 } ?? true }
 
-        // The ring: drawn on its right, bottom and left; open over its top-left quarter; hollow.
+        // In progress: the ring with a bold arc on it, from 12 o'clock a third of the way round.
         let ring = try #require(e.layoutManager.taskIconRect(forCharacterAt: 0))
         #expect(ring.width == e.styler.theme.fontSize)
-        #expect(isCyan(color(ring, 0.93, 0.5)))
-        #expect(isCyan(color(ring, 0.5, 0.93)))
-        #expect(isCyan(color(ring, 0.80, 0.20)))   // top right
-        #expect(isCyan(color(ring, 0.20, 0.80)))   // bottom left
-        #expect(isEmpty(color(ring, 0.20, 0.20)))  // top left: the opening
+        #expect(isBlue(color(ring, 0.87, 0.29)))        // at 2 o'clock: on the arc
+        #expect(isBlue(color(ring, 0.5, 0.07)))         // at 12 o'clock: where the arc starts
+        #expect(isRing(color(ring, 0.07, 0.5)))         // at 9 o'clock: the ring
+        #expect(isRing(color(ring, 0.5, 0.93)))         // at 6 o'clock
         #expect(isEmpty(color(ring, 0.5, 0.5)))
 
-        // The pause mark: two bars with a gap between them.
+        // Waiting: the same ring with a pause mark — two bars with a gap between them — in its middle.
         let pause = try #require(e.layoutManager.taskIconRect(forCharacterAt: e.index(of: "- [>]")))
-        #expect(isPink(color(pause, 0.15, 0.5)))
-        #expect(isPink(color(pause, 0.85, 0.5)))
-        #expect(isEmpty(color(pause, 0.5, 0.5)))
-        #expect(isPink(color(pause, 0.15, 0.05)) && isPink(color(pause, 0.85, 0.95))) // full height
+        #expect(isRing(color(pause, 0.07, 0.5)) && isRing(color(pause, 0.5, 0.93)) && isRing(color(pause, 0.5, 0.07)))
+        #expect(isOrange(color(pause, 0.35, 0.5)) && isOrange(color(pause, 0.65, 0.5)))    // the bars
+        #expect(isEmpty(color(pause, 0.5, 0.5)))                                            // between them
+        #expect(isEmpty(color(pause, 0.5, 0.25)) && isEmpty(color(pause, 0.2, 0.5)))        // between the bars and the ring
 
         if let dir = ProcessInfo.processInfo.environment["MARKDOWN_STICKIES_RENDER_DIR"] {
             try data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("signals.png"))
@@ -250,7 +251,7 @@ struct TaskStateTests {
 
     @Test func inANoteTheRingsOfToDosInProgressAreLayers() throws {
         let e = ConcealedEditor("- [/] 一つ目\n- [>] 待機\n本文\n\t- [/] 二つ目")
-        #expect(e.textView.spinnerOverlay == nil)            // not in a window: the layout manager draws them
+        #expect(e.textView.spinnerOverlay == nil)            // not in a window: the layout manager draws the arcs too
         #expect(!e.layoutManager.doingTasksAreAnimated)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 400), styleMask: [.borderless],
                               backing: .buffered, defer: true)

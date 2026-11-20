@@ -1,8 +1,9 @@
 import AppKit
 import QuartzCore
 
-/// The rings of the to-dos in progress, turning. They are layers over the text, so the turning runs in
-/// the render server: nothing is redrawn for a frame, and typing does not disturb it.
+/// The arcs on the rings of the to-dos in progress, turning (the rings themselves are drawn with the
+/// text, see TaskSignalIcon). They are layers over the text, so the turning runs in the render server:
+/// nothing is redrawn for a frame, and typing does not disturb it.
 final class TaskSpinnerOverlay: NSView {
     struct Ring: Equatable {
         /// The square the ring fills, in this view's coordinates.
@@ -11,7 +12,7 @@ final class TaskSpinnerOverlay: NSView {
     }
 
     /// Seconds for one turn.
-    static let period: CFTimeInterval = 1.4
+    static let period: CFTimeInterval = 1.2
     private static let animationKey = "turn"
 
     private let color: NSColor
@@ -51,7 +52,7 @@ final class TaskSpinnerOverlay: NSView {
         while ringLayers.count < rings.count {
             let ring = CAShapeLayer()
             ring.fillColor = nil
-            ring.lineCap = .butt
+            ring.lineCap = .round
             ring.strokeColor = color.cgColor
             host.addSublayer(ring)
             ringLayers.append(ring)
@@ -60,7 +61,7 @@ final class TaskSpinnerOverlay: NSView {
         for (ring, layer) in zip(rings, ringLayers) {
             // The turning is an animation of the presentation only, so the frame can be set as usual.
             layer.frame = ring.frame
-            layer.path = TaskSignalIcon.ringPath(in: layer.bounds)
+            layer.path = TaskSignalIcon.arcPath(in: layer.bounds)
             layer.lineWidth = TaskSignalIcon.ringLineWidth(in: layer.bounds)
             layer.opacity = ring.opacity
         }

@@ -23,7 +23,7 @@ final class TestNote {
                                           styler: MarkdownStyler(), concealsMarkdown: true)
     }
 
-    /// The whole window as it would be drawn, title bar included: the paper, the visible text, the rings
+    /// The whole window as it would be drawn, title bar included: the paper, the visible text, the arcs
     /// of the to-dos in progress (which are layers, so they are drawn here as they stand) and the title bar.
     func png() -> Data? {
         guard let frameView = window.contentView?.superview else { return nil }
@@ -52,7 +52,7 @@ final class TestNote {
             context.cgContext.saveGState()
             context.cgContext.translateBy(x: 0, y: rect.minY + rect.maxY) // the icons are drawn y-down
             context.cgContext.scaleBy(x: 1, y: -1)
-            TaskSignalIcon.draw(.doing, in: rect, theme: MarkdownTheme(), alpha: CGFloat(ring.opacity))
+            TaskSignalIcon.draw(.doing, in: rect, theme: MarkdownTheme(), alpha: CGFloat(ring.opacity), ring: .arc)
             context.cgContext.restoreGState()
         }
         if let chrome = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) {

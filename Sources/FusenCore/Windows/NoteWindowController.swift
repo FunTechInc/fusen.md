@@ -159,7 +159,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         let theme = styler.theme
         for (focus, button) in zip(NoteFocus.allCases, focusButtons) {
             let isOther = meta.focus != nil && meta.focus != focus
+            // (The ring of a signal is drawn in the ink of the paper: white once the paper is darkened.)
             button.image = TaskSignalIcon.image(focus.state, theme: theme, size: Self.focusButtonSize,
+                                                ink: meta.focus == nil ? nil : theme.focusInk,
                                                 alpha: isOther ? theme.focusButtonFade : 1)
         }
         let hasSignals = MarkdownStyler.taskStates(in: textStorage).contains(where: \.isSignal)

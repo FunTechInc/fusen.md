@@ -1218,7 +1218,7 @@ final class MarkdownTextView: NSTextView {
     }
 
     private func taskStateImage(_ state: TaskState) -> NSImage? {
-        (layoutManager as? ConcealingLayoutManager).map { TaskSignalIcon.image(state, theme: $0.theme) }
+        (layoutManager as? ConcealingLayoutManager).map { TaskSignalIcon.image(state, theme: $0.theme, ink: .labelColor) }
     }
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {

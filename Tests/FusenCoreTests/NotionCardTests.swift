@@ -18,7 +18,7 @@ struct NotionCardTests {
         <callout icon="📌" color="orange_bg">
         \t**プロジェクトA**
         \t- [ ] 進行中 {color="blue"}
-        \t- [ ] 待機 {color="pink"}
+        \t- [ ] 待機 {color="orange"}
         \t- [ ] 未着手
         </callout>
         """)
@@ -122,7 +122,7 @@ struct NotionCardTests {
         #expect(fromNotion("<callout icon=\"💡\" color=\"blue_bg\">\n\tメモ\n\t- 項目\n\t\t- 子\n</callout>") == ":::card blue \nメモ\n- 項目\n\t- 子\n:::")
         #expect(fromNotion("<callout icon=\"💡\" color=\"green\">\n\t**太字の名前**\n</callout>") == ":::card green 太字の名前\n:::")
         #expect(fromNotion("<callout icon=\"💡\">\n\t**太字**と本文\n</callout>") == ":::card default \n**太字**と本文\n:::")
-        #expect(fromNotion("<callout icon=\"💡\">\n\t- [ ] 最初からタスク {color=\"pink\"}\n</callout>") == ":::card default \n- [>] 最初からタスク\n:::")
+        #expect(fromNotion("<callout icon=\"💡\">\n\t- [ ] 最初からタスク {color=\"orange\"}\n</callout>") == ":::card default \n- [>] 最初からタスク\n:::")
         #expect(fromNotion("<callout>\n</callout>") == ":::card default \n:::")
         // A color the app has no card for: the default one.
         #expect(fromNotion("<callout icon=\"💡\" color=\"teal_bg\">\n\t**名前**\n</callout>") == ":::card default 名前\n:::")
@@ -175,7 +175,7 @@ struct NotionCardTests {
     }
 
     @Test func aToDoInASignalsColorIsThatSignal() {
-        #expect(fromNotion("- [ ] 進行中 {color=\"blue\"}\n- [ ] 待機 {color=\"pink_bg\"}\n\t- [ ] 子 {color=\"blue_bg\"}")
+        #expect(fromNotion("- [ ] 進行中 {color=\"blue\"}\n- [ ] 待機 {color=\"orange_bg\"}\n\t- [ ] 子 {color=\"blue_bg\"}")
                 == "- [/] 進行中\n- [>] 待機\n\t- [/] 子")
         #expect(fromNotion("- [ ] {color=\"blue\"}") == "- [/] ")
         // A checked one is done; other colors and other blocks are not signals.

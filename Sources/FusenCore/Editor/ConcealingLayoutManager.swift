@@ -25,8 +25,8 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         }
     }
 
-    /// Set by a text view that shows the rings of the to-dos in progress itself, turning (see
-    /// TaskSpinnerOverlay). Otherwise the rings are drawn here, still.
+    /// Set by a text view that shows the arcs of the to-dos in progress itself, turning (see
+    /// TaskSpinnerOverlay). Otherwise the arcs are drawn here, still, with their rings.
     var doingTasksAreAnimated = false {
         didSet {
             guard doingTasksAreAnimated != oldValue, let length = textStorage?.length else { return }
@@ -212,12 +212,11 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             if let check = storage.attribute(.mdTaskToggle, at: run.location, effectiveRange: nil) as? Int,
                check < storage.length {
                 let state = TaskState(character: (storage.string as NSString).character(at: check)) ?? .todo
-                // A ring that turns is the text view's (see TaskSpinnerOverlay).
-                guard !(state == .doing && doingTasksAreAnimated),
-                      let rect = taskIconRect(forCharacterAt: run.location) else { return }
+                guard let rect = taskIconRect(forCharacterAt: run.location) else { return }
+                // An arc that turns is the text view's (see TaskSpinnerOverlay): here only the track under it.
                 TaskSignalIcon.draw(state, in: rect.offsetBy(dx: origin.x, dy: origin.y), theme: theme,
                                     ink: storage.attribute(.mdInk, at: run.location, effectiveRange: nil) as? NSColor,
-                                    alpha: fade(at: run.location))
+                                    alpha: fade(at: run.location), ring: doingTasksAreAnimated ? .track : .whole)
             } else if let depth = storage.attribute(.mdBullet, at: run.location, effectiveRange: nil) as? Int {
                 drawBullet(depth: depth, in: box, glyph: glyph, origin: origin, color: tone(at: run.location))
             } else if let ordinal = storage.attribute(.mdOrdinal, at: run.location, effectiveRange: nil) as? String {

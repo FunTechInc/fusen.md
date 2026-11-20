@@ -49,9 +49,10 @@ enum SlashCommand: String, CaseIterable, Sendable {
     /// "/", and "；" for a Japanese keyboard, where "/" types "・" (Notion takes it too).
     static func isTrigger(_ character: unichar) -> Bool { character == 0x2F || character == 0xFF1B }
 
+    /// `ink`: the color of the row's text (white on the highlighted row).
     @MainActor
-    func icon(theme: MarkdownTheme) -> NSImage? {
-        if let taskState { return TaskSignalIcon.image(taskState, theme: theme) }
+    func icon(theme: MarkdownTheme, ink: NSColor) -> NSImage? {
+        if let taskState { return TaskSignalIcon.image(taskState, theme: theme, ink: ink) }
         let name = self == .card ? "rectangle.inset.topleft.filled" : "minus"
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: self == .card ? "rectangle" : "minus", accessibilityDescription: nil)
@@ -102,7 +103,9 @@ final class SlashMenuPanel: NSPanel {
         rows.forEach { $0.removeFromSuperview() }
         let height = CGFloat(menu.commands.count) * Self.rowHeight + 2 * Self.inset
         rows = menu.commands.enumerated().map { index, command in
-            let row = SlashMenuRow(title: command.title, icon: command.icon(theme: theme), isSelected: index == menu.selected)
+            let isSelected = index == menu.selected
+            let row = SlashMenuRow(title: command.title, icon: command.icon(theme: theme, ink: isSelected ? .white : .labelColor),
+                                   isSelected: isSelected)
             row.frame = NSRect(x: Self.inset, y: height - Self.inset - CGFloat(index + 1) * Self.rowHeight,
                                width: Self.width - 2 * Self.inset, height: Self.rowHeight)
             row.onClick = { [weak self] in self?.onChoose?(index) }

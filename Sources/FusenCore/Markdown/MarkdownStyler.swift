@@ -115,9 +115,12 @@ struct MarkdownTheme {
     var dividerColor = NSColor(srgbRed: 55 / 255, green: 53 / 255, blue: 47 / 255, alpha: 0.16)
     /// Notion's checked checkbox fill.
     var checkboxFill = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
-    /// The signals: the ring of a to-do in progress (#00BFFF) and the pause mark of one that waits (#FF00B7).
-    var doingColor = NSColor(srgbRed: 0, green: 191 / 255, blue: 1, alpha: 1)
-    var waitingColor = NSColor(srgbRed: 1, green: 0, blue: 183 / 255, alpha: 1)
+    /// The marks of the signals (see TaskSignalIcon). The arc of a to-do in progress has the blue of the
+    /// checked checkbox — what is being done and what is done are one color, as Notion's "In progress"
+    /// is blue too — and the pause mark of one that waits has Notion's orange, which holds its own on
+    /// every paper color.
+    var doingColor = NSColor(srgbRed: 35 / 255, green: 131 / 255, blue: 226 / 255, alpha: 1)
+    var waitingColor = NSColor(srgbRed: 217 / 255, green: 115 / 255, blue: 13 / 255, alpha: 1)
     /// 強調表示 (the Figma): the paper under 67 % black, the emphasized to-dos in white, everything else
     /// at 31 %; the button of the emphasis that is off at 29 %.
     var focusShade: CGFloat = 0.67

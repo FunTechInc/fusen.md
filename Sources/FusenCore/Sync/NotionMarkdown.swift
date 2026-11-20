@@ -329,11 +329,11 @@ enum NotionMarkdown {
         color == .default ? "<callout icon=\"\(cardIcon)\">" : "<callout icon=\"\(cardIcon)\" color=\"\(color.rawValue)_bg\">"
     }
 
-    /// The color of a to-do that is in progress (the ring's blue) or waiting (the pause mark's pink).
+    /// The color of a to-do that is in progress (the ring's blue) or waiting (the pause mark's orange).
     static func signalColor(_ state: TaskState) -> String? {
         switch state {
         case .doing: "blue"
-        case .waiting: "pink"
+        case .waiting: "orange"
         case .todo, .done: nil
         }
     }
@@ -479,7 +479,7 @@ enum NotionMarkdown {
     ///
     /// A callout becomes a card — its color the card's, its own text the card's title — and columns that
     /// each hold one callout become a row of cards (other columns come in one below the other). A to-do
-    /// in the color of a signal (blue: in progress, pink: waiting) becomes that signal.
+    /// in the color of a signal (blue: in progress, orange: waiting) becomes that signal.
     static func fromNotion(_ markdown: String) -> String {
         let styler = MarkdownStyler()
         var out: [String] = []
@@ -552,7 +552,7 @@ enum NotionMarkdown {
     private static let calloutOpen = makeRegex(#"^<callout(?:\s[^>]*)?>\s*$"#)
     private static let colorAttribute = makeRegex(#"\scolor="([a-z_]+)""#)
     private static let unchecked = makeRegex(#"^[-*+][ \t]+\[ \][ \t]+$"#)
-    private static let signalSuffix = makeRegex(#"(?:^|[ \t])\{color="(blue|pink)(?:_bg)?"\}[ \t]*$"#)
+    private static let signalSuffix = makeRegex(#"(?:^|[ \t])\{color="(blue|orange)(?:_bg)?"\}[ \t]*$"#)
 
     /// An unchecked to-do in a signal's color, as that signal: "- [ ] 資料 {color="blue"}" is "- [/] 資料".
     private static func signalToDo(prefix: String, content: String) -> (prefix: String, content: String)? {

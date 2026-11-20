@@ -49,7 +49,7 @@ enum MainMenu {
         let theme = MarkdownTheme()
         let taskStates = TaskState.allCases.enumerated().map { index, state in
             let stateItem = item(state.title, #selector(MarkdownTextView.setTaskState(_:)), tag: index)
-            stateItem.image = TaskSignalIcon.image(state, theme: theme)
+            stateItem.image = TaskSignalIcon.image(state, theme: theme, ink: .labelColor)
             return stateItem
         }
         let cardColors = CardColor.allCases.enumerated().map { index, color in

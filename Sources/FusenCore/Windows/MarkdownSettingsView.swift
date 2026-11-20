@@ -74,7 +74,7 @@ struct MarkdownSettingsView: View {
 
     /// A signal as the notes draw it, with its name.
     private func signal(_ state: TaskState, _ title: String) -> some View {
-        Label { Text(title) } icon: { Image(nsImage: TaskSignalIcon.image(state, theme: MarkdownTheme())) }
+        Label { Text(title) } icon: { Image(nsImage: TaskSignalIcon.image(state, theme: MarkdownTheme(), ink: .labelColor)) }
     }
 
     /// Slanted as the notes show italic text: Japanese fonts have no italic face.
