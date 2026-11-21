@@ -38,6 +38,41 @@ struct CardRowTests {
         }
     }
 
+    @Test func aRowAtTheVeryStartHasTheSpaceAboveItsTitlesToo() throws {
+        // TextKit gives a paragraph at the top of the text no space before it: below the row's line of no
+        // height, that is each card's opening line. They make up for it, as a card on its own does.
+        let row = "::::columns\n:::card orange LP リニューアル\n- [ ] ヒーローを実装する\n:::\n:::card blue 管理画面\n- [ ] CSV 出力の API\n:::\n::::"
+        let single = try #require(editor(":::card orange LP\n- [ ] ヒーロー\n:::").layoutManager.cardGeometries().first)
+        let singleTag = try #require(single.tags.first)
+        // Side by side; one below the other (in a note too narrow for the row); under a heading.
+        for (text, width) in [(row, 300.0), (row, 200), ("## 見出し\n" + row, 300)] {
+            let e = editor(text, width: width)
+            let cards = e.layoutManager.cardGeometries()
+            try #require(cards.count == 2)
+            for card in cards {
+                let tag = try #require(card.tags.first)
+                #expect(abs(tag.minY - card.frame.minY - theme.cardPaddingTop) < 1.5, "\(width) \(text.prefix(8))")
+                #expect(abs(card.dots.midY - tag.midY) < 0.5, "\(width) \(text.prefix(8))")
+            }
+            if text == row {
+                // Where a card the note starts with is.
+                #expect(abs(cards[0].frame.minY - single.frame.minY) < 0.5, "\(width)")
+                #expect(abs(cards[0].tags[0].minY - singleTag.minY) < 0.5, "\(width)")
+            } else {
+                // Under the heading, as far from it as before.
+                let heading = e.layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+                #expect(abs(cards[0].frame.minY - heading.maxY - theme.cardGap) < 0.5)
+            }
+        }
+        // A title that wraps: the space is above its first line only.
+        let long = editor("::::columns\n:::card orange とても長いカードの名前が折り返す\n一\n:::\n:::card blue B\n二\n:::\n::::")
+        let card = try #require(long.layoutManager.cardGeometries().first)
+        try #require(card.tags.count > 1)
+        #expect(abs(card.tags[0].minY - card.frame.minY - theme.cardPaddingTop) < 1.5)
+        for (above, below) in zip(card.tags, card.tags.dropFirst()) { #expect(abs(below.minY - above.maxY) < 0.5) }
+        try TestNote(row, size: CGSize(width: 360, height: 220)).write("row-at-the-start")
+    }
+
     // MARK: Editing in a row (in a window, as the keyboard does it)
 
     private func withEditor(_ text: String, width: CGFloat = 320, _ body: @MainActor (ConcealedEditor) -> Void) {
