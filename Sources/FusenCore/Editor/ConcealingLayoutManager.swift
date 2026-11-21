@@ -110,7 +110,8 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     /// The lines around a row of cards show nothing when the Markdown is concealed: they take no height.
     /// A card's closing line is only the space under its text then; with the Markdown shown it gets the
-    /// room its ":::" needs to stand inside the card. A card at the very start keeps the space above it.
+    /// room its ":::" needs to stand inside the card. A card at the top of the text (the note's first
+    /// line, or a card of a row the note starts with) keeps the space above it.
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
@@ -124,10 +125,13 @@ final class ConcealingLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             baselineOffset.pointee = 0
             return true
         }
-        // TextKit leaves out the space before the first paragraph of the text: a card that the note starts
-        // with would lose the top of its frame, and its title would stick out above it.
-        if kind == .cardOpen, character == 0,
-           let style = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle {
+        // TextKit leaves out the space before a paragraph at the top of the text: a card that the note
+        // starts with — or each card of a row that it starts with, below the row's line of no height —
+        // would lose the top of its frame, and its title would stick out above it. Only the first line of
+        // the opening paragraph has that space (a long title wraps).
+        if kind == .cardOpen,
+           (storage.string as NSString).paragraphRange(for: NSRange(location: character, length: 0)).location == character,
+           let style = storage.attribute(.paragraphStyle, at: character, effectiveRange: nil) as? NSParagraphStyle {
             let missing = style.paragraphSpacingBefore - (lineFragmentUsedRect.pointee.minY - lineFragmentRect.pointee.minY)
             if missing > 0.5 {
                 lineFragmentRect.pointee.size.height += missing
