@@ -1,0 +1,26 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macOS with Xcode 27 (Swift 6.4), which the README asks for. GitHub calls this image a public preview.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: swift --version
+      - name: Test
+        run: swift test
+      - name: Build the app
+        run: ./scripts/build-app.sh
