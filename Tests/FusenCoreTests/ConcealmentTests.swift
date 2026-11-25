@@ -74,10 +74,22 @@ final class ConcealedEditor {
         }
     }
 
-    func png() -> Data? {
+    /// Drawn at `scale` pixels per point whatever the screen is. Taking the screen's would give one
+    /// pixel per point where there is no display (CI), too coarse for the tests that read the color at
+    /// a fraction of a point.
+    func png(scale: CGFloat = 2) -> Data? {
         textView.frame.size.height = max(layoutManager.usedRect(for: layoutManager.textContainers[0]).height + 20, 60)
-        guard let rep = textView.bitmapImageRepForCachingDisplay(in: textView.bounds) else { return nil }
-        textView.cacheDisplay(in: textView.bounds, to: rep)
+        let bounds = textView.bounds
+        // The screen's kind of bitmap (its color space included), only with `scale` pixels per point.
+        guard let screens = textView.bitmapImageRepForCachingDisplay(in: bounds),
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: Int((bounds.width * scale).rounded(.up)),
+                                         pixelsHigh: Int((bounds.height * scale).rounded(.up)),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: screens.colorSpaceName, bytesPerRow: 0, bitsPerPixel: 0)?
+                .retagging(with: screens.colorSpace) else { return nil }
+        rep.size = bounds.size // before drawing: `scale` pixels per point
+        textView.cacheDisplay(in: bounds, to: rep)
         return rep.representation(using: .png, properties: [:])
     }
 }
